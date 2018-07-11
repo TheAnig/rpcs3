@@ -33,7 +33,7 @@ void GLFragmentDecompilerThread::insertHeader(std::stringstream & OS)
 	OS << "#version 430\n";
 }
 
-void GLFragmentDecompilerThread::insertIntputs(std::stringstream & OS)
+void GLFragmentDecompilerThread::insertInputs(std::stringstream & OS)
 {
 	bool two_sided_enabled = m_prog.front_back_color_enabled && (m_prog.back_color_diffuse_output || m_prog.back_color_specular_output);
 	std::vector<std::string> inputs_to_declare;
@@ -369,7 +369,6 @@ void GLFragmentProgram::Compile()
 	const char* str = shader.c_str();
 	const int strlen = ::narrow<int>(shader.length());
 
-	fs::create_path(fs::get_config_dir() + "/shaderlog");
 	fs::file(fs::get_config_dir() + "shaderlog/FragmentProgram" + std::to_string(id) + ".glsl", fs::rewrite).write(str);
 
 	glShaderSource(id, 1, &str, &strlen);

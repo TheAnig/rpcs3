@@ -314,7 +314,7 @@ static NEVER_INLINE s32 savedata_op(ppu_thread& ppu, u32 operation, u32 version,
 		auto delete_save = [&](const std::string& del_path)
 		{
 			strcpy_trunc(doneGet->dirName, save_entries[selected].dirName);
-			doneGet->hddFreeSizeKB = 40 * 1024 * 1024; // 40 GB
+			doneGet->hddFreeSizeKB = 40 * 1024 * 1024 - 1; // Read explanation in cellHddGameCheck
 			doneGet->sizeKB        = 0;
 			doneGet->excResult     = CELL_OK;
 			std::memset(doneGet->reserved, 0, sizeof(doneGet->reserved));
@@ -481,7 +481,7 @@ static NEVER_INLINE s32 savedata_op(ppu_thread& ppu, u32 operation, u32 version,
 			// error
 		}
 
-		statGet->hddFreeSizeKB = 40 * 1024 * 1024; // 40 GB
+		statGet->hddFreeSizeKB = 40 * 1024 * 1024 - 1; // Read explanation in cellHddGameCheck
 		statGet->isNewData = save_entry.isNew = psf.empty();
 
 		statGet->dir.atime = save_entry.atime = dir_info.atime;
@@ -571,15 +571,14 @@ static NEVER_INLINE s32 savedata_op(ppu_thread& ppu, u32 operation, u32 version,
 		// Stat Callback
 		funcStat(ppu, result, statGet, statSet);
 
-		if (result->result < 0)
+		if (result->result != CELL_SAVEDATA_CBRESULT_OK_NEXT)
 		{
 			cellSaveData.warning("savedata_op(): funcStat returned result=%d.", result->result);
-			return CELL_SAVEDATA_ERROR_CBRESULT;
-		}
 
-		if (result->result == CELL_SAVEDATA_CBRESULT_OK_LAST || result->result == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
-		{
-			return CELL_OK;
+			if (result->result < CELL_SAVEDATA_CBRESULT_OK_NEXT)
+			{
+				return CELL_SAVEDATA_ERROR_CBRESULT;
+			}
 		}
 
 		if (statSet->setParam)
@@ -653,6 +652,11 @@ static NEVER_INLINE s32 savedata_op(ppu_thread& ppu, u32 operation, u32 version,
 			cellSaveData.error("savedata_op(): unknown statSet->reCreateMode (0x%x)", statSet->reCreateMode);
 			return CELL_SAVEDATA_ERROR_PARAM;
 		}
+		}
+
+		if (result->result != CELL_SAVEDATA_CBRESULT_OK_NEXT)
+		{
+			funcFile = vm::null;
 		}
 	}
 
@@ -779,6 +783,11 @@ static NEVER_INLINE s32 savedata_op(ppu_thread& ppu, u32 operation, u32 version,
 		case CELL_SAVEDATA_FILEOP_WRITE:
 		{
 			fs::file file(dir_path + file_path, fs::write + fs::create);
+			if (!file)
+			{
+				fmt::throw_exception("Failed to open file. The file might be read-only: %s%s" HERE, dir_path, file_path);
+			}
+
 			file.seek(fileSet->fileOffset);
 			const auto start = static_cast<uchar*>(fileSet->fileBuf.get_ptr());
 			std::vector<uchar> buf(start, start + std::min<u32>(fileSet->fileSize, fileSet->fileBufSize));
@@ -797,6 +806,11 @@ static NEVER_INLINE s32 savedata_op(ppu_thread& ppu, u32 operation, u32 version,
 		case CELL_SAVEDATA_FILEOP_WRITE_NOTRUNC:
 		{
 			fs::file file(dir_path + file_path, fs::write + fs::create);
+			if (!file)
+			{
+				fmt::throw_exception("Failed to open file. The file might be read-only: %s%s" HERE, dir_path, file_path);
+			}
+
 			file.seek(fileSet->fileOffset);
 			const auto start = static_cast<uchar*>(fileSet->fileBuf.get_ptr());
 			std::vector<uchar> buf(start, start + std::min<u32>(fileSet->fileSize, fileSet->fileBufSize));

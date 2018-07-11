@@ -217,9 +217,9 @@ void save_manager_dialog::OnSort(int logicalIndex)
 		{
 			m_sort_ascending = true;
 		}
+		m_sort_column = logicalIndex;
 		Qt::SortOrder sort_order = m_sort_ascending ? Qt::AscendingOrder : Qt::DescendingOrder;
 		m_list->sortByColumn(m_sort_column, sort_order);
-		m_sort_column = logicalIndex;
 	}
 }
 
@@ -334,7 +334,9 @@ void save_manager_dialog::ShowContextMenu(const QPoint &pos)
 	menu->exec(globalPos);
 }
 
-void save_manager_dialog::closeEvent(QCloseEvent * event)
+void save_manager_dialog::closeEvent(QCloseEvent *event)
 {
 	m_gui_settings->SetValue(gui::sd_geometry, saveGeometry());
+
+	QDialog::closeEvent(event);
 }

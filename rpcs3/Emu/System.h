@@ -30,6 +30,13 @@ enum class spu_decoder_type
 	llvm,
 };
 
+enum class spu_block_size_type
+{
+	safe,
+	mega,
+	giga,
+};
+
 enum class lib_loading_type
 {
 	automatic,
@@ -140,19 +147,42 @@ enum class frame_limit_type
 	_auto,
 };
 
+enum class detail_level
+{
+	minimal,
+	low,
+	medium,
+	high,
+};
+
+enum class screen_quadrant
+{
+	top_left,
+	top_right,
+	bottom_left,
+	bottom_right
+};
+
+enum class tsx_usage
+{
+	disabled,
+	enabled,
+	forced,
+};
+
 enum CellNetCtlState : s32;
 enum CellSysutilLang : s32;
 
 struct EmuCallbacks
 {
 	std::function<void(std::function<void()>)> call_after;
-	std::function<void()> process_events;
 	std::function<void()> on_run;
 	std::function<void()> on_pause;
 	std::function<void()> on_resume;
 	std::function<void()> on_stop;
 	std::function<void()> on_ready;
 	std::function<void()> exit;
+	std::function<void(s32, s32)> handle_taskbar_progress; // (type, value) type: 0 for reset, 1 for increment, 2 for set_limit
 	std::function<std::shared_ptr<class KeyboardHandlerBase>()> get_kb_handler;
 	std::function<std::shared_ptr<class MouseHandlerBase>()> get_mouse_handler;
 	std::function<std::shared_ptr<class pad_thread>()> get_pad_handler;
@@ -253,11 +283,13 @@ public:
 	}
 
 	bool BootGame(const std::string& path, bool direct = false, bool add_only = false);
+	bool BootRsxCapture(const std::string& path);
 	bool InstallPkg(const std::string& path);
 
+private:
 	static std::string GetEmuDir();
+public:
 	static std::string GetHddDir();
-	static std::string GetLibDir();
 
 	void SetForceBoot(bool force_boot);
 
@@ -281,6 +313,13 @@ struct cfg_root : cfg::node
 {
 	struct node_core : cfg::node
 	{
+		static constexpr bool thread_scheduler_enabled_def =
+#ifdef _WIN32
+			true;
+#else
+			false;
+#endif
+
 		node_core(cfg::node* _this) : cfg::node(_this, "Core") {}
 
 		cfg::_enum<ppu_decoder_type> ppu_decoder{this, "PPU Decoder", ppu_decoder_type::llvm};
@@ -289,19 +328,21 @@ struct cfg_root : cfg::node
 		cfg::_bool llvm_logs{this, "Save LLVM logs"};
 		cfg::string llvm_cpu{this, "Use LLVM CPU"};
 		cfg::_int<0, INT32_MAX> llvm_threads{this, "Max LLVM Compile Threads", 0};
-
-#ifdef _WIN32
-		cfg::_bool thread_scheduler_enabled{ this, "Enable thread scheduler", true };
-#else
-		cfg::_bool thread_scheduler_enabled{ this, "Enable thread scheduler", false };
-#endif
-
+		cfg::_bool thread_scheduler_enabled{this, "Enable thread scheduler", thread_scheduler_enabled_def};
+		cfg::_bool set_daz_and_ftz{this, "Set DAZ and FTZ", false};
 		cfg::_enum<spu_decoder_type> spu_decoder{this, "SPU Decoder", spu_decoder_type::asmjit};
 		cfg::_bool lower_spu_priority{this, "Lower SPU thread priority"};
 		cfg::_bool spu_debug{this, "SPU Debug"};
 		cfg::_int<0, 6> preferred_spu_threads{this, "Preferred SPU Threads", 0}; //Numnber of hardware threads dedicated to heavy simultaneous spu tasks
 		cfg::_int<0, 16> spu_delay_penalty{this, "SPU delay penalty", 3}; //Number of milliseconds to block a thread if a virtual 'core' isn't free
 		cfg::_bool spu_loop_detection{this, "SPU loop detection", true}; //Try to detect wait loops and trigger thread yield
+		cfg::_bool spu_shared_runtime{this, "SPU Shared Runtime", true}; // Share compiled SPU functions between all threads
+		cfg::_enum<spu_block_size_type> spu_block_size{this, "SPU Block Size", spu_block_size_type::safe};
+		cfg::_bool spu_accurate_getllar{this, "Accurate GETLLAR", false};
+		cfg::_bool spu_accurate_putlluc{this, "Accurate PUTLLUC", false};
+		cfg::_bool spu_verification{this, "SPU Verification", true}; // Should be enabled
+		cfg::_bool spu_cache{this, "SPU Cache", true};
+		cfg::_enum<tsx_usage> enable_TSX{this, "Enable TSX", tsx_usage::enabled}; // Enable TSX. Forcing this on Haswell/Broadwell CPUs should be used carefully
 
 		cfg::_enum<lib_loading_type> lib_loading{this, "Lib Loader", lib_loading_type::liblv2only};
 		cfg::_bool hook_functions{this, "Hook static functions"};
@@ -313,13 +354,20 @@ struct cfg_root : cfg::node
 	{
 		node_vfs(cfg::node* _this) : cfg::node(_this, "VFS") {}
 
+		std::string get(const cfg::string&, const char*) const;
+
 		cfg::string emulator_dir{this, "$(EmulatorDir)"}; // Default (empty): taken from fs::get_config_dir()
 		cfg::string dev_hdd0{this, "/dev_hdd0/", "$(EmulatorDir)dev_hdd0/"};
 		cfg::string dev_hdd1{this, "/dev_hdd1/", "$(EmulatorDir)dev_hdd1/"};
-		cfg::string dev_flash{this, "/dev_flash/", "$(EmulatorDir)dev_flash/"};
+		cfg::string dev_flash{this, "/dev_flash/"};
 		cfg::string dev_usb000{this, "/dev_usb000/", "$(EmulatorDir)dev_usb000/"};
 		cfg::string dev_bdvd{this, "/dev_bdvd/"}; // Not mounted
 		cfg::string app_home{this, "/app_home/"}; // Not mounted
+
+		std::string get_dev_flash() const
+		{
+			return get(dev_flash, "dev_flash/");
+		}
 
 		cfg::_bool host_root{this, "Enable /host_root/"};
 
@@ -344,15 +392,17 @@ struct cfg_root : cfg::node
 		cfg::_bool debug_output{this, "Debug output"};
 		cfg::_bool overlay{this, "Debug overlay"};
 		cfg::_bool gl_legacy_buffers{this, "Use Legacy OpenGL Buffers"};
-		cfg::_bool use_gpu_texture_scaling{this, "Use GPU texture scaling", true};
+		cfg::_bool use_gpu_texture_scaling{this, "Use GPU texture scaling", false};
 		cfg::_bool stretch_to_display_area{this, "Stretch To Display Area"};
 		cfg::_bool force_high_precision_z_buffer{this, "Force High Precision Z buffer"};
 		cfg::_bool strict_rendering_mode{this, "Strict Rendering Mode"};
 		cfg::_bool disable_zcull_queries{this, "Disable ZCull Occlusion Queries", false};
 		cfg::_bool disable_vertex_cache{this, "Disable Vertex Cache", false};
+		cfg::_bool disable_FIFO_reordering{this, "Disable FIFO Reordering", false};
 		cfg::_bool frame_skip_enabled{this, "Enable Frame Skip", false};
 		cfg::_bool force_cpu_blit_processing{this, "Force CPU Blit", false}; // Debugging option
 		cfg::_bool disable_on_disk_shader_cache{this, "Disable On-Disk Shader Cache", false};
+		cfg::_bool disable_vulkan_mem_allocator{ this, "Disable Vulkan Memory Allocator", false };
 		cfg::_bool full_rgb_range_output{this, "Use full RGB output range", true}; // Video out dynamic range
 		cfg::_int<1, 8> consequtive_frames_to_draw{this, "Consecutive Frames To Draw", 1};
 		cfg::_int<1, 8> consequtive_frames_to_skip{this, "Consecutive Frames To Skip", 1};
@@ -378,6 +428,21 @@ struct cfg_root : cfg::node
 			cfg::_bool force_primitive_restart{this, "Force primitive restart flag"};
 
 		} vk{this};
+
+		struct node_perf_overlay : cfg::node
+		{
+			node_perf_overlay(cfg::node* _this) : cfg::node(_this, "Performance Overlay") {}
+
+			cfg::_bool perf_overlay_enabled{this, "Enabled", false};
+			cfg::_enum<detail_level> level{this, "Detail level", detail_level::high};
+			cfg::_int<30, 5000> update_interval{ this, "Metrics update interval (ms)", 350 };
+			cfg::_int<4, 36> font_size{ this, "Font size (px)", 10 };
+			cfg::_enum<screen_quadrant> position{this, "Position", screen_quadrant::top_left};
+			cfg::string font{this, "Font", "n023055ms.ttf"};
+			cfg::_int<0, 500> margin{this, "Margin (px)", 50};
+			cfg::_int<0, 100> opacity{this, "Opacity (%)", 70};
+
+		} perf_overlay{this};
 
 	} video{this};
 
@@ -444,3 +509,5 @@ struct cfg_root : cfg::node
 };
 
 extern cfg_root g_cfg;
+
+extern bool g_use_rtm;

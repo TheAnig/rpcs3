@@ -19,27 +19,30 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QScrollBar>
+#include <QInputDialog>
+#include <QToolTip>
+#include <QApplication>
+#include <QClipboard>
 
 inline std::string sstr(const QString& _in) { return _in.toStdString(); }
-inline QSize sizeFromSlider(const int& pos) { return gui::gl_icon_size_min + (gui::gl_icon_size_max - gui::gl_icon_size_min) * (pos / (float)gui::gl_max_slider_pos); }
 
 game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std::shared_ptr<emu_settings> emuSettings, QWidget *parent)
-	: custom_dock_widget(tr("Game List"), parent), xgui_settings(guiSettings), xemu_settings(emuSettings)
+	: custom_dock_widget(tr("Game List"), parent), m_gui_settings(guiSettings), m_emu_settings(emuSettings)
 {
-	m_isListLayout    = xgui_settings->GetValue(gui::gl_listMode).toBool();
-	m_Margin_Factor   = xgui_settings->GetValue(gui::gl_marginFactor).toReal();
-	m_Text_Factor     = xgui_settings->GetValue(gui::gl_textFactor).toReal();
-	m_Icon_Color      = xgui_settings->GetValue(gui::gl_iconColor).value<QColor>();
-	m_colSortOrder    = xgui_settings->GetValue(gui::gl_sortAsc).toBool() ? Qt::AscendingOrder : Qt::DescendingOrder;
-	m_sortColumn      = xgui_settings->GetValue(gui::gl_sortCol).toInt();
-	m_hidden_list     = xgui_settings->GetValue(gui::gl_hidden_list).toStringList().toSet();
+	m_isListLayout    = m_gui_settings->GetValue(gui::gl_listMode).toBool();
+	m_Margin_Factor   = m_gui_settings->GetValue(gui::gl_marginFactor).toReal();
+	m_Text_Factor     = m_gui_settings->GetValue(gui::gl_textFactor).toReal();
+	m_Icon_Color      = m_gui_settings->GetValue(gui::gl_iconColor).value<QColor>();
+	m_colSortOrder    = m_gui_settings->GetValue(gui::gl_sortAsc).toBool() ? Qt::AscendingOrder : Qt::DescendingOrder;
+	m_sortColumn      = m_gui_settings->GetValue(gui::gl_sortCol).toInt();
+	m_hidden_list     = m_gui_settings->GetValue(gui::gl_hidden_list).toStringList().toSet();
 
 	m_oldLayoutIsList = m_isListLayout;
 
 	// Save factors for first setup
-	xgui_settings->SetValue(gui::gl_iconColor, m_Icon_Color);
-	xgui_settings->SetValue(gui::gl_marginFactor, m_Margin_Factor);
-	xgui_settings->SetValue(gui::gl_textFactor, m_Text_Factor);
+	m_gui_settings->SetValue(gui::gl_iconColor, m_Icon_Color);
+	m_gui_settings->SetValue(gui::gl_marginFactor, m_Margin_Factor);
+	m_gui_settings->SetValue(gui::gl_textFactor, m_Text_Factor);
 
 	m_Game_Dock = new QMainWindow(this);
 	m_Game_Dock->setWindowFlags(Qt::Widget);
@@ -50,6 +53,7 @@ game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std:
 	m_gameList = new game_list();
 	m_gameList->setShowGrid(false);
 	m_gameList->setItemDelegate(new table_item_delegate(this));
+	m_gameList->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	m_gameList->setSelectionBehavior(QAbstractItemView::SelectRows);
 	m_gameList->setSelectionMode(QAbstractItemView::SingleSelection);
 	m_gameList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
@@ -64,30 +68,13 @@ game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std:
 	m_gameList->horizontalHeader()->setSortIndicatorShown(true);
 	m_gameList->horizontalHeader()->setStretchLastSection(true);
 	m_gameList->horizontalHeader()->setDefaultSectionSize(150);
+	m_gameList->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft);
 	m_gameList->setContextMenuPolicy(Qt::CustomContextMenu);
 	m_gameList->setAlternatingRowColors(true);
 	m_gameList->installEventFilter(this);
-
 	m_gameList->setColumnCount(gui::column_count);
-	m_gameList->setHorizontalHeaderItem(gui::column_icon,       new QTableWidgetItem(tr("Icon")));
-	m_gameList->setHorizontalHeaderItem(gui::column_name,       new QTableWidgetItem(tr("Name")));
-	m_gameList->setHorizontalHeaderItem(gui::column_serial,     new QTableWidgetItem(tr("Serial")));
-	m_gameList->setHorizontalHeaderItem(gui::column_firmware,   new QTableWidgetItem(tr("Firmware")));
-	m_gameList->setHorizontalHeaderItem(gui::column_version,    new QTableWidgetItem(tr("Version")));
-	m_gameList->setHorizontalHeaderItem(gui::column_category,   new QTableWidgetItem(tr("Category")));
-	m_gameList->setHorizontalHeaderItem(gui::column_path,       new QTableWidgetItem(tr("Path")));
-	m_gameList->setHorizontalHeaderItem(gui::column_resolution, new QTableWidgetItem(tr("Supported Resolutions")));
-	m_gameList->setHorizontalHeaderItem(gui::column_sound,      new QTableWidgetItem(tr("Sound Formats")));
-	m_gameList->setHorizontalHeaderItem(gui::column_parental,   new QTableWidgetItem(tr("Parental Level")));
-	m_gameList->setHorizontalHeaderItem(gui::column_compat,     new QTableWidgetItem(tr("Compatibility")));
 
-	// since this won't work somehow: gameList->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft);
-	for (int i = 0; i < m_gameList->horizontalHeader()->count(); i++)
-	{
-		m_gameList->horizontalHeaderItem(i)->setTextAlignment(Qt::AlignLeft);
-	}
-
-	m_game_compat = std::make_unique<game_compatibility>(xgui_settings);
+	m_game_compat = std::make_unique<game_compatibility>(m_gui_settings);
 
 	m_Central_Widget = new QStackedWidget(this);
 	m_Central_Widget->addWidget(m_gameList);
@@ -97,24 +84,28 @@ game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std:
 	m_Game_Dock->setCentralWidget(m_Central_Widget);
 
 	// Actions regarding showing/hiding columns
-	QAction* showIconColAct          = new QAction(tr("Show Icons"), this);
-	QAction* showNameColAct          = new QAction(tr("Show Names"), this);
-	QAction* showSerialColAct        = new QAction(tr("Show Serials"), this);
-	QAction* showFWColAct            = new QAction(tr("Show Firmwares"), this);
-	QAction* showAppVersionColAct    = new QAction(tr("Show Versions"), this);
-	QAction* showCategoryColAct      = new QAction(tr("Show Categories"), this);
-	QAction* showPathColAct          = new QAction(tr("Show Paths"), this);
-	QAction* showResolutionColAct    = new QAction(tr("Show Supported Resolutions"), this);
-	QAction* showSoundFormatColAct   = new QAction(tr("Show Sound Formats"), this);
-	QAction* showParentalLevelColAct = new QAction(tr("Show Parental Levels"), this);
-	QAction* showCompatibilityAct    = new QAction(tr("Show Compatibilities"), this);
+	auto AddColumn = [this](gui::game_list_columns col, const QString& header_text, const QString& action_text)
+	{
+		m_gameList->setHorizontalHeaderItem(col, new QTableWidgetItem(header_text));
+		m_columnActs.append(new QAction(action_text, this));
+	};
 
-	m_columnActs = { showIconColAct, showNameColAct, showSerialColAct, showFWColAct, showAppVersionColAct, showCategoryColAct, showPathColAct,
-		showResolutionColAct, showSoundFormatColAct, showParentalLevelColAct, showCompatibilityAct };
+	AddColumn(gui::column_icon,       tr("Icon"),                  tr("Show Icons"));
+	AddColumn(gui::column_name,       tr("Name"),                  tr("Show Names"));
+	AddColumn(gui::column_serial,     tr("Serial"),                tr("Show Serials"));
+	AddColumn(gui::column_firmware,   tr("Firmware"),              tr("Show Firmwares"));
+	AddColumn(gui::column_version,    tr("Version"),               tr("Show Versions"));
+	AddColumn(gui::column_category,   tr("Category"),              tr("Show Categories"));
+	AddColumn(gui::column_path,       tr("Path"),                  tr("Show Paths"));
+	AddColumn(gui::column_move,       tr("PlayStation Move"),      tr("Show PlayStation Move"));
+	AddColumn(gui::column_resolution, tr("Supported Resolutions"), tr("Show Supported Resolutions"));
+	AddColumn(gui::column_sound,      tr("Sound Formats"),         tr("Show Sound Formats"));
+	AddColumn(gui::column_parental,   tr("Parental Level"),        tr("Show Parental Levels"));
+	AddColumn(gui::column_compat,     tr("Compatibility"),         tr("Show Compatibility"));
 
 	// Events
 	connect(m_gameList, &QTableWidget::customContextMenuRequested, this, &game_list_frame::ShowContextMenu);
-	connect(m_gameList, &QTableWidget::doubleClicked, this, &game_list_frame::doubleClickedSlot);
+	connect(m_gameList, &QTableWidget::itemDoubleClicked, this, &game_list_frame::doubleClickedSlot);
 
 	connect(m_gameList->horizontalHeader(), &QHeaderView::sectionClicked, this, &game_list_frame::OnColClicked);
 	connect(m_gameList->horizontalHeader(), &QHeaderView::customContextMenuRequested, [=](const QPoint& pos)
@@ -124,30 +115,30 @@ game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std:
 		configure->exec(mapToGlobal(pos));
 	});
 
-	connect(m_xgrid, &QTableWidget::doubleClicked, this, &game_list_frame::doubleClickedSlot);
+	connect(m_xgrid, &QTableWidget::itemDoubleClicked, this, &game_list_frame::doubleClickedSlot);
 	connect(m_xgrid, &QTableWidget::customContextMenuRequested, this, &game_list_frame::ShowContextMenu);
 
 	connect(m_game_compat.get(), &game_compatibility::DownloadStarted, [=]()
 	{
-		for (auto& game : m_game_data)
+		for (const auto& game : m_game_data)
 		{
-			game.compat = m_game_compat->GetStatusData("Download");
+			game->compat = m_game_compat->GetStatusData("Download");
 		}
 		Refresh();
 	});
 	connect(m_game_compat.get(), &game_compatibility::DownloadFinished, [=]()
 	{
-		for (auto& game : m_game_data)
+		for (const auto& game : m_game_data)
 		{
-			game.compat = m_game_compat->GetCompatibility(game.info.serial);
+			game->compat = m_game_compat->GetCompatibility(game->info.serial);
 		}
 		Refresh();
 	});
 	connect(m_game_compat.get(), &game_compatibility::DownloadError, [=](const QString& error)
 	{
-		for (auto& game : m_game_data)
+		for (const auto& game : m_game_data)
 		{
-			game.compat = m_game_compat->GetCompatibility(game.info.serial);
+			game->compat = m_game_compat->GetCompatibility(game->info.serial);
 		}
 		Refresh();
 		QMessageBox::warning(this, tr("Warning!"), tr("Failed to retrieve the online compatibility database!\nFalling back to local database.\n\n") + tr(qPrintable(error)));
@@ -164,7 +155,7 @@ game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std:
 				int c = 0;
 				for (int i = 0; i < m_columnActs.count(); ++i)
 				{
-					if (xgui_settings->GetGamelistColVisibility(i) && ++c > 1)
+					if (m_gui_settings->GetGamelistColVisibility(i) && ++c > 1)
 						break;
 				}
 				if (c < 2)
@@ -174,12 +165,11 @@ game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std:
 				}
 			}
 			m_gameList->setColumnHidden(col, !checked); // Negate because it's a set col hidden and we have menu say show.
-			xgui_settings->SetGamelistColVisibility(col, checked);
+			m_gui_settings->SetGamelistColVisibility(col, checked);
 
 			if (checked) // handle hidden columns that have zero width after showing them (stuck between others)
 			{
-				if (m_gameList->columnWidth(col) <= m_gameList->horizontalHeader()->minimumSectionSize())
-					m_gameList->setColumnWidth(col, m_gameList->horizontalHeader()->minimumSectionSize());
+				FixNarrowColumns();
 			}
 		});
 	}
@@ -187,44 +177,76 @@ game_list_frame::game_list_frame(std::shared_ptr<gui_settings> guiSettings, std:
 
 void game_list_frame::LoadSettings()
 {
-	QByteArray state = xgui_settings->GetValue(gui::gl_state).toByteArray();
+	m_colSortOrder = m_gui_settings->GetValue(gui::gl_sortAsc).toBool() ? Qt::AscendingOrder : Qt::DescendingOrder;
+	m_sortColumn = m_gui_settings->GetValue(gui::gl_sortCol).toInt();
+	m_categoryFilters = m_gui_settings->GetGameListCategoryFilters();
 
-	if (state.isEmpty())
-	{ // If no settings exist, go to default.
-		if (m_gameList->rowCount() > 0)
-		{
-			m_gameList->verticalHeader()->resizeSections(QHeaderView::ResizeMode::ResizeToContents);
-			m_gameList->horizontalHeader()->resizeSections(QHeaderView::ResizeMode::ResizeToContents);
-			m_gameList->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
-		}
-	}
-	else
+	Refresh(true);
+
+	QByteArray state = m_gui_settings->GetValue(gui::gl_state).toByteArray();
+	if (!m_gameList->horizontalHeader()->restoreState(state) && m_gameList->rowCount())
 	{
-		m_gameList->horizontalHeader()->restoreState(state);
+		// If no settings exist, resize to contents.
+		ResizeColumnsToContents();
 	}
 
 	for (int col = 0; col < m_columnActs.count(); ++col)
 	{
-		bool vis = xgui_settings->GetGamelistColVisibility(col);
+		bool vis = m_gui_settings->GetGamelistColVisibility(col);
 		m_columnActs[col]->setChecked(vis);
 		m_gameList->setColumnHidden(col, !vis);
 	}
 
+	FixNarrowColumns();
+
 	m_gameList->horizontalHeader()->restoreState(m_gameList->horizontalHeader()->saveState());
-	m_gameList->horizontalHeader()->stretchLastSection();
-
-	m_colSortOrder = xgui_settings->GetValue(gui::gl_sortAsc).toBool() ? Qt::AscendingOrder : Qt::DescendingOrder;
-
-	m_sortColumn = xgui_settings->GetValue(gui::gl_sortCol).toInt();
-
-	m_categoryFilters = xgui_settings->GetGameListCategoryFilters();
-
-	Refresh(true);
 }
 
 game_list_frame::~game_list_frame()
 {
 	SaveSettings();
+}
+
+void game_list_frame::FixNarrowColumns()
+{
+	qApp->processEvents();
+
+	// handle columns (other than the icon column) that have zero width after showing them (stuck between others)
+	for (int col = 1; col < m_columnActs.count(); ++col)
+	{
+		if (m_gameList->isColumnHidden(col))
+		{
+			continue;
+		}
+
+		if (m_gameList->columnWidth(col) <= m_gameList->horizontalHeader()->minimumSectionSize())
+		{
+			m_gameList->setColumnWidth(col, m_gameList->horizontalHeader()->minimumSectionSize());
+		}
+	}
+}
+
+void game_list_frame::ResizeColumnsToContents(int spacing)
+{
+	if (!m_gameList)
+	{
+		return;
+	}
+
+	m_gameList->verticalHeader()->resizeSections(QHeaderView::ResizeMode::ResizeToContents);
+	m_gameList->horizontalHeader()->resizeSections(QHeaderView::ResizeMode::ResizeToContents);
+
+	// Make non-icon columns slighty bigger for better visuals
+	for (int i = 1; i < m_gameList->columnCount(); i++)
+	{
+		if (m_gameList->isColumnHidden(i))
+		{
+			continue;
+		}
+
+		int size = m_gameList->horizontalHeader()->sectionSize(i) + spacing;
+		m_gameList->horizontalHeader()->resizeSection(i, size);
+	}
 }
 
 void game_list_frame::OnColClicked(int col)
@@ -241,32 +263,93 @@ void game_list_frame::OnColClicked(int col)
 	}
 	m_sortColumn = col;
 
-	xgui_settings->SetValue(gui::gl_sortAsc, m_colSortOrder == Qt::AscendingOrder);
-	xgui_settings->SetValue(gui::gl_sortCol, col);
+	m_gui_settings->SetValue(gui::gl_sortAsc, m_colSortOrder == Qt::AscendingOrder);
+	m_gui_settings->SetValue(gui::gl_sortCol, col);
 
 	SortGameList();
 }
 
 // Get visibility of entries
-bool game_list_frame::IsEntryVisible(const GUI_GameInfo& game)
+bool game_list_frame::IsEntryVisible(const game_info& game)
 {
 	auto matches_category = [&]()
 	{
 		if (m_isListLayout)
-			return m_categoryFilters.contains(qstr(game.info.category));
-		return category::CategoryInMap(game.info.category, category::cat_boot);
+		{
+			return m_categoryFilters.contains(qstr(game->info.category));
+		}
+		return category::CategoryInMap(game->info.category, category::cat_boot);
 	};
-	bool is_visible = m_show_hidden || !m_hidden_list.contains(qstr(game.info.serial));
-	return is_visible && matches_category() && SearchMatchesApp(game.info.name, game.info.serial);
+
+	bool is_visible = m_show_hidden || !m_hidden_list.contains(qstr(game->info.serial));
+	return is_visible && matches_category() && SearchMatchesApp(game->info.name, game->info.serial);
 }
 
 void game_list_frame::SortGameList()
 {
+	// Back-up old header sizes to handle unwanted column resize in case of zero search results
+	QList<int> column_widths;
+	int old_row_count = m_gameList->rowCount();
+	int old_game_count = m_game_data.count();
+
+	for (int i = 0; i < m_gameList->columnCount(); i++)
+	{
+		column_widths.append(m_gameList->columnWidth(i));
+	}
+
+	// Sorting resizes hidden columns, so unhide them as a workaround
+	QList<int> columns_to_hide;
+
+	for (int i = 0; i < m_gameList->columnCount(); i++)
+	{
+		if (m_gameList->isColumnHidden(i))
+		{
+			m_gameList->setColumnHidden(i, false);
+			columns_to_hide << i;
+		}
+	}
+
+	// Sort the list by column and sort order
 	m_gameList->sortByColumn(m_sortColumn, m_colSortOrder);
+
+	// Hide columns again
+	for (auto i : columns_to_hide)
+	{
+		m_gameList->setColumnHidden(i, true);
+	}
+
+	// Don't resize the columns if no game is shown to preserve the header settings
+	if (!m_gameList->rowCount())
+	{
+		for (int i = 0; i < m_gameList->columnCount(); i++)
+		{
+			m_gameList->setColumnWidth(i, column_widths[i]);
+		}
+
+		m_gameList->horizontalHeader()->setSectionResizeMode(gui::column_icon, QHeaderView::Fixed);
+		return;
+	}
+
+	// Fixate vertical header and row height
 	m_gameList->verticalHeader()->setMinimumSectionSize(m_Icon_Size.height());
 	m_gameList->verticalHeader()->setMaximumSectionSize(m_Icon_Size.height());
 	m_gameList->resizeRowsToContents();
-	m_gameList->resizeColumnToContents(0);
+
+	// Resize columns if the game list was empty before
+	if (!old_row_count && !old_game_count)
+	{
+		ResizeColumnsToContents();
+	}
+	else
+	{
+		m_gameList->resizeColumnToContents(gui::column_icon);
+	}
+
+	// Fixate icon column
+	m_gameList->horizontalHeader()->setSectionResizeMode(gui::column_icon, QHeaderView::Fixed);
+
+	// Shorten the last section to remove horizontal scrollbar if possible
+	m_gameList->resizeColumnToContents(gui::column_count - 1);
 }
 
 void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
@@ -276,6 +359,7 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 		// Load PSF
 
 		m_game_data.clear();
+		m_notes.clear();
 
 		const std::string _hdd = Emu.GetHddDir();
 
@@ -329,6 +413,8 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 			game.parental_lvl = psf::get_integer(psf, "PARENTAL_LEVEL");
 			game.resolution   = psf::get_integer(psf, "RESOLUTION");
 			game.sound_format = psf::get_integer(psf, "SOUND_FORMAT");
+			game.bootable     = psf::get_integer(psf, "BOOTABLE", 0);
+			game.attr         = psf::get_integer(psf, "ATTRIBUTE", 0);
 
 			// Detect duplication
 			if (!serial_cat[game.serial].emplace(game.category).second)
@@ -336,9 +422,10 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 				continue;
 			}
 
-			serials.insert(qstr(game.serial));
+			QString serial = qstr(game.serial);
+			m_notes[serial] = m_gui_settings->GetValue(gui::notes, serial, "").toString();
+			serials.insert(serial);
 
-			bool bootable = false;
 			auto cat = category::cat_boot.find(game.category);
 			if (cat != category::cat_boot.end())
 			{
@@ -352,7 +439,6 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 				}
 
 				game.category = sstr(cat->second);
-				bootable = true;
 			}
 			else if ((cat = category::cat_data.find(game.category)) != category::cat_data.end())
 			{
@@ -381,7 +467,7 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 
 			QPixmap pxmap = PaintedPixmap(img, hasCustomConfig);
 
-			m_game_data.push_back({ game, m_game_compat->GetCompatibility(game.serial), img, pxmap, bootable, hasCustomConfig });
+			m_game_data.push_back(game_info(new gui_game_info{ game, m_game_compat->GetCompatibility(game.serial), img, pxmap, hasCustomConfig }));
 		}
 		catch (const std::exception& e)
 		{
@@ -390,9 +476,9 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 			// Blame MSVC for double }}
 		}}
 
-		auto op = [](const GUI_GameInfo& game1, const GUI_GameInfo& game2)
+		auto op = [](const game_info& game1, const game_info& game2)
 		{
-			return qstr(game1.info.name).toLower() < qstr(game2.info.name).toLower();
+			return qstr(game1->info.name).toLower() < qstr(game2->info.name).toLower();
 		};
 
 		// Sort by name at the very least.
@@ -400,7 +486,7 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 
 		// clean up hidden games list
 		m_hidden_list.intersect(serials);
-		xgui_settings->SetValue(gui::gl_hidden_list, QStringList(m_hidden_list.toList()));
+		m_gui_settings->SetValue(gui::gl_hidden_list, QStringList(m_hidden_list.toList()));
 	}
 
 	// Fill Game List / Game Grid
@@ -432,7 +518,7 @@ void game_list_frame::Refresh(const bool fromDrive, const bool scrollAfter)
 
 		int scroll_position = m_xgrid->verticalScrollBar()->value();
 		PopulateGameGrid(games_per_row, m_Icon_Size, m_Icon_Color);
-		connect(m_xgrid, &QTableWidget::doubleClicked, this, &game_list_frame::doubleClickedSlot);
+		connect(m_xgrid, &QTableWidget::itemDoubleClicked, this, &game_list_frame::doubleClickedSlot);
 		connect(m_xgrid, &QTableWidget::customContextMenuRequested, this, &game_list_frame::ShowContextMenu);
 		m_Central_Widget->addWidget(m_xgrid);
 		m_Central_Widget->setCurrentWidget(m_xgrid);
@@ -461,12 +547,12 @@ void game_list_frame::SaveSettings()
 {
 	for (int col = 0; col < m_columnActs.count(); ++col)
 	{
-		xgui_settings->SetGamelistColVisibility(col, m_columnActs[col]->isChecked());
+		m_gui_settings->SetGamelistColVisibility(col, m_columnActs[col]->isChecked());
 	}
-	xgui_settings->SetValue(gui::gl_sortCol, m_sortColumn);
-	xgui_settings->SetValue(gui::gl_sortAsc, m_colSortOrder == Qt::AscendingOrder);
+	m_gui_settings->SetValue(gui::gl_sortCol, m_sortColumn);
+	m_gui_settings->SetValue(gui::gl_sortAsc, m_colSortOrder == Qt::AscendingOrder);
 
-	xgui_settings->SetValue(gui::gl_state, m_gameList->horizontalHeader()->saveState());
+	m_gui_settings->SetValue(gui::gl_state, m_gameList->horizontalHeader()->saveState());
 }
 
 static void open_dir(const std::string& spath)
@@ -476,66 +562,59 @@ static void open_dir(const std::string& spath)
 	QDesktopServices::openUrl(QUrl("file:///" + path));
 }
 
-void game_list_frame::doubleClickedSlot(const QModelIndex& index)
+void game_list_frame::doubleClickedSlot(QTableWidgetItem *item)
 {
-	int i;
+	if (item == nullptr)
+	{
+		return;
+	}
+
+	game_info game;
 
 	if (m_isListLayout)
 	{
-		i = m_gameList->item(index.row(), gui::column_icon)->data(Qt::UserRole).toInt();
+		game = GetGameInfoFromItem(m_gameList->item(item->row(), gui::column_icon));
 	}
 	else
 	{
-		i = m_xgrid->item(index.row(), index.column())->data(Qt::ItemDataRole::UserRole).toInt();
+		game = GetGameInfoFromItem(item);
+	}
+
+	if (game.get() == nullptr)
+	{
+		return;
 	}
 
 	LOG_NOTICE(LOADER, "Booting from gamelist per doubleclick...");
-	Q_EMIT RequestBoot(m_game_data[i].info.path);
+	Q_EMIT RequestBoot(game->info.path);
 }
 
 void game_list_frame::ShowContextMenu(const QPoint &pos)
 {
-	int index;
-
-	if (m_isListLayout)
-	{
-		int row = m_gameList->indexAt(pos).row();
-		QTableWidgetItem* item = m_gameList->item(row, gui::column_icon);
-		if (item == nullptr) return;  // null happens if you are double clicking in dockwidget area on nothing.
-		index = item->data(Qt::UserRole).toInt();
-	}
-	else
-	{
-		int row = m_xgrid->indexAt(pos).row();
-		int col = m_xgrid->indexAt(pos).column();
-		QTableWidgetItem* item = m_xgrid->item(row, col);
-		if (item == nullptr) return;  // null happens if you are double clicking in dockwidget area on nothing.
-		index = item->data(Qt::ItemDataRole::UserRole).toInt();
-		if (index == -1) return; // empty item shouldn't have context menu
-	}
-	ShowSpecifiedContextMenu(pos, index);
-}
-
-void game_list_frame::ShowSpecifiedContextMenu(const QPoint &pos, int row)
-{
-	if (row == -1)
-	{
-		return; // invalid
-	}
-
 	QPoint globalPos;
+	QTableWidgetItem* item;
 
 	if (m_isListLayout)
 	{
+		item = m_gameList->item(m_gameList->indexAt(pos).row(), gui::column_icon);
 		globalPos = m_gameList->mapToGlobal(pos);
 	}
 	else
 	{
+		QModelIndex mi = m_xgrid->indexAt(pos);
+		item = m_xgrid->item(mi.row(), mi.column());
 		globalPos = m_xgrid->mapToGlobal(pos);
 	}
 
-	GameInfo currGame = m_game_data[row].info;
+	game_info gameinfo = GetGameInfoFromItem(item);
+	if (gameinfo.get() == nullptr)
+	{
+		return;
+	}
+
+	GameInfo currGame = gameinfo->info;
 	const QString serial = qstr(currGame.serial);
+	const QString name = qstr(currGame.name).simplified();
 
 	// Make Actions
 	QMenu myMenu;
@@ -554,14 +633,21 @@ void game_list_frame::ShowSpecifiedContextMenu(const QPoint &pos, int row)
 	QAction* removeConfig = myMenu.addAction(tr("&Remove Custom Configuration"));
 	QAction* deleteShadersCache = myMenu.addAction(tr("&Delete Shaders Cache"));
 	QAction* deleteLLVMCache = myMenu.addAction(tr("&Delete LLVM Cache"));
+	QAction* deleteSPUCache = myMenu.addAction(tr("&Delete SPU Cache"));
 	myMenu.addSeparator();
 	QAction* openGameFolder = myMenu.addAction(tr("&Open Install Folder"));
 	QAction* openConfig = myMenu.addAction(tr("&Open Config Folder"));
 	myMenu.addSeparator();
 	QAction* checkCompat = myMenu.addAction(tr("&Check Game Compatibility"));
 	QAction* downloadCompat = myMenu.addAction(tr("&Download Compatibility Database"));
+	myMenu.addSeparator();
+	QAction* editNotes = myMenu.addAction(tr("&Edit Tooltip Notes"));
+	QMenu* info_menu = myMenu.addMenu(tr("&Copy Info"));
+	QAction* copy_info = info_menu->addAction(tr("&Copy Name + Serial"));
+	QAction* copy_name = info_menu->addAction(tr("&Copy Name"));
+	QAction* copy_serial = info_menu->addAction(tr("&Copy Serial"));
 
-	const std::string config_base_dir = fs::get_config_dir() + "data/" + m_game_data[row].info.serial;
+	const std::string config_base_dir = fs::get_config_dir() + "data/" + currGame.serial;
 
 	connect(boot, &QAction::triggered, [=]
 	{
@@ -570,12 +656,11 @@ void game_list_frame::ShowSpecifiedContextMenu(const QPoint &pos, int row)
 	});
 	connect(configure, &QAction::triggered, [=]
 	{
-		settings_dialog dlg(xgui_settings, xemu_settings, 0, this, &currGame);
-		connect(&dlg, &QDialog::accepted, [this]
+		settings_dialog dlg(m_gui_settings, m_emu_settings, 0, this, &currGame);
+		if (dlg.exec() == QDialog::Accepted && !gameinfo->hasCustomConfig)
 		{
-			Refresh(true, false);
-		});
-		dlg.exec();
+			ShowCustomConfigIcon(item, true);
+		}
 	});
 	connect(hide_serial, &QAction::triggered, [=](bool checked)
 	{
@@ -584,7 +669,7 @@ void game_list_frame::ShowSpecifiedContextMenu(const QPoint &pos, int row)
 		else
 			m_hidden_list.remove(serial);
 
-		xgui_settings->SetValue(gui::gl_hidden_list, QStringList(m_hidden_list.toList()));
+		m_gui_settings->SetValue(gui::gl_hidden_list, QStringList(m_hidden_list.toList()));
 		Refresh();
 	});
 	connect(createLLVMCache, &QAction::triggered, [=]
@@ -596,7 +681,13 @@ void game_list_frame::ShowSpecifiedContextMenu(const QPoint &pos, int row)
 	});
 	connect(removeGame, &QAction::triggered, [=]
 	{
-		QMessageBox* mb = new QMessageBox(QMessageBox::Question, tr("Confirm %1 Removal").arg(qstr(currGame.category)), tr("Permanently remove %1 from drive?").arg(qstr(currGame.name)), QMessageBox::Yes | QMessageBox::No, this);
+		if (currGame.path.empty())
+		{
+			LOG_FATAL(GENERAL, "Cannot delete game. Path is empty");
+			return;
+		}
+
+		QMessageBox* mb = new QMessageBox(QMessageBox::Question, tr("Confirm %1 Removal").arg(qstr(currGame.category)), tr("Permanently remove %0 from drive?\nPath: %1").arg(name).arg(qstr(currGame.path)), QMessageBox::Yes | QMessageBox::No, this);
 		mb->setCheckBox(new QCheckBox(tr("Remove caches and custom config")));
 		mb->deleteLater();
 		if (mb->exec() == QMessageBox::Yes)
@@ -605,18 +696,28 @@ void game_list_frame::ShowSpecifiedContextMenu(const QPoint &pos, int row)
 			{
 				DeleteShadersCache(config_base_dir);
 				DeleteLLVMCache(config_base_dir);
+				DeleteSPUCache(config_base_dir);
 				RemoveCustomConfiguration(config_base_dir);
 			}
 			fs::remove_all(currGame.path);
-			m_game_data.erase(m_game_data.begin() + row);
-			Refresh();
+			m_game_data.erase(std::remove(m_game_data.begin(), m_game_data.end(), gameinfo), m_game_data.end());
+			if (m_isListLayout)
+			{
+				m_gameList->removeRow(m_gameList->currentItem()->row());
+			}
+			else
+			{
+				Refresh();
+			}
 			LOG_SUCCESS(GENERAL, "Removed %s %s in %s", currGame.category, currGame.name, currGame.path);
 		}
 	});
 	connect(removeConfig, &QAction::triggered, [=]()
 	{
 		if (RemoveCustomConfiguration(config_base_dir, true))
-			Refresh(true, false);
+		{
+			ShowCustomConfigIcon(item, false);
+		}
 	});
 	connect(deleteShadersCache, &QAction::triggered, [=]()
 	{
@@ -625,6 +726,10 @@ void game_list_frame::ShowSpecifiedContextMenu(const QPoint &pos, int row)
 	connect(deleteLLVMCache, &QAction::triggered, [=]()
 	{
 		DeleteLLVMCache(config_base_dir, true);
+	});
+	connect(deleteSPUCache, &QAction::triggered, [=]()
+	{
+		DeleteSPUCache(config_base_dir, true);
 	});
 	connect(openGameFolder, &QAction::triggered, [=]()
 	{
@@ -636,12 +741,37 @@ void game_list_frame::ShowSpecifiedContextMenu(const QPoint &pos, int row)
 	});
 	connect(checkCompat, &QAction::triggered, [=]
 	{
-		QString link = "https://rpcs3.net/compatibility?g=" + qstr(currGame.serial);
+		QString link = "https://rpcs3.net/compatibility?g=" + serial;
 		QDesktopServices::openUrl(QUrl(link));
 	});
 	connect(downloadCompat, &QAction::triggered, [=]
 	{
 		m_game_compat->RequestCompatibility(true);
+	});
+	connect(editNotes, &QAction::triggered, [=]
+	{
+		bool accepted;
+		const QString old_notes = m_gui_settings->GetValue(gui::notes, serial, "").toString();
+		const QString new_notes = QInputDialog::getMultiLineText(this, tr("Edit Tooltip Notes"), QString("%0\n%1").arg(name).arg(serial), old_notes, &accepted);
+
+		if (accepted)
+		{
+			m_notes[serial] = new_notes;
+			m_gui_settings->SetValue(gui::notes, serial, new_notes);
+			Refresh();
+		}
+	});
+	connect(copy_info, &QAction::triggered, [=]
+	{
+		QApplication::clipboard()->setText(name + " [" + serial + "]");
+	});
+	connect(copy_name, &QAction::triggered, [=]
+	{
+		QApplication::clipboard()->setText(name);
+	});
+	connect(copy_serial, &QAction::triggered, [=]
+	{
+		QApplication::clipboard()->setText(serial);
 	});
 
 	//Disable options depending on software category
@@ -665,13 +795,14 @@ void game_list_frame::ShowSpecifiedContextMenu(const QPoint &pos, int row)
 	}
 
 	// Disable removeconfig if no config exists.
-	removeConfig->setEnabled(m_game_data[row].hasCustomConfig);
+	removeConfig->setEnabled(gameinfo->hasCustomConfig);
 
 	// remove delete options if necessary
 	if (!fs::is_dir(config_base_dir))
 	{
 		deleteShadersCache->setEnabled(false);
 		deleteLLVMCache->setEnabled(false);
+		deleteSPUCache->setEnabled(false);
 	}
 
 	myMenu.exec(globalPos);
@@ -708,17 +839,18 @@ bool game_list_frame::DeleteShadersCache(const std::string& base_dir, bool is_in
 	if (is_interactive && QMessageBox::question(this, tr("Confirm Delete"), tr("Delete shaders cache?")) != QMessageBox::Yes)
 		return false;
 
-	fs::dir root = fs::dir(base_dir);
-	fs::dir_entry tmp;
-
-	while (root.read(tmp))
+	QDirIterator dir_iter(qstr(base_dir), QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+	while (dir_iter.hasNext())
 	{
-		if (!fs::is_dir(base_dir + "/" + tmp.name))
-			continue;
+		const QString filepath = dir_iter.next();
 
-		const std::string shader_cache_name = base_dir + "/" + tmp.name + "/shaders_cache";
-		if (fs::is_dir(shader_cache_name))
-			fs::remove_all(shader_cache_name, true);
+		if (dir_iter.fileName() == "shaders_cache")
+		{
+			if (QDir(filepath).removeRecursively())
+				LOG_NOTICE(GENERAL, "Removed shaders cache dir: %s", sstr(filepath));
+			else
+				LOG_WARNING(GENERAL, "Could not remove shaders cache file: %s", sstr(filepath));
+		}
 	}
 
 	LOG_SUCCESS(GENERAL, "Removed shaders cache in %s", base_dir);
@@ -733,52 +865,107 @@ bool game_list_frame::DeleteLLVMCache(const std::string& base_dir, bool is_inter
 	if (is_interactive && QMessageBox::question(this, tr("Confirm Delete"), tr("Delete LLVM cache?")) != QMessageBox::Yes)
 		return false;
 
-	for (auto&& subdir : fs::dir{ base_dir })
+	QDirIterator dir_iter(qstr(base_dir), QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+	while (dir_iter.hasNext())
 	{
-		if (!subdir.is_directory || subdir.name == "." || subdir.name == "..")
-			continue;
+		const QString filepath = dir_iter.next();
 
-		const std::string dir = base_dir + "/" + subdir.name;
-
-		for (auto&& entry : fs::dir{ dir })
+		if (dir_iter.fileInfo().absoluteFilePath().endsWith(".obj", Qt::CaseInsensitive))
 		{
-			if (entry.name.size() >= 4 && entry.name.compare(entry.name.size() - 4, 4, ".obj", 4) == 0)
-				fs::remove_file(dir + "/" + entry.name);
+			if (QFile::remove(filepath))
+				LOG_NOTICE(GENERAL, "Removed LLVM cache file: %s", sstr(filepath));
+			else
+				LOG_WARNING(GENERAL, "Could not remove LLVM cache file: %s", sstr(filepath));
 		}
 	}
 
-	LOG_SUCCESS(GENERAL, "Removed llvm cache in %s", base_dir);
+	LOG_SUCCESS(GENERAL, "Removed LLVM cache in %s", base_dir);
 	return true;
 }
 
-QPixmap game_list_frame::PaintedPixmap(const QImage& img, bool paintConfigIcon)
+bool game_list_frame::DeleteSPUCache(const std::string& base_dir, bool is_interactive)
 {
-	QImage scaled = QImage(m_Icon_Size, QImage::Format_ARGB32);
-	scaled.fill(m_Icon_Color);
+	if (!fs::is_dir(base_dir))
+		return false;
 
-	QPainter painter(&scaled);
+	if (is_interactive && QMessageBox::question(this, tr("Confirm Delete"), tr("Delete SPU cache?")) != QMessageBox::Yes)
+		return false;
+
+	QDirIterator dir_iter(qstr(base_dir), QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+	while (dir_iter.hasNext())
+	{
+		const QString filepath = dir_iter.next();
+
+		if (dir_iter.fileInfo().absoluteFilePath().endsWith(".dat", Qt::CaseInsensitive))
+		{
+			if (QFile::remove(filepath))
+				LOG_NOTICE(GENERAL, "Removed SPU cache file: %s", sstr(filepath));
+			else
+				LOG_WARNING(GENERAL, "Could not remove SPU cache file: %s", sstr(filepath));
+		}
+	}
+
+	LOG_SUCCESS(GENERAL, "Removed SPU cache in %s", base_dir);
+	return true;
+}
+
+QPixmap game_list_frame::PaintedPixmap(const QImage& img, bool paint_config_icon)
+{
+	const QSize original_size = img.size();
+
+	QImage image = QImage(original_size, QImage::Format_ARGB32);
+	image.fill(m_Icon_Color);
+
+	QPainter painter(&image);
 
 	if (!img.isNull())
 	{
-		painter.drawImage(QPoint(0, 0), img.scaled(m_Icon_Size, Qt::KeepAspectRatio, Qt::TransformationMode::SmoothTransformation));
+		painter.drawImage(QPoint(0, 0), img);
 	}
 
-	if (paintConfigIcon && !m_isListLayout)
+	if (paint_config_icon && !m_isListLayout)
 	{
-		int width = m_Icon_Size.width() * 0.2;
-		QPoint origin = QPoint(m_Icon_Size.width() - width, 0);
-		painter.drawImage(origin, QImage(":/Icons/cog_gray.png").scaled(QSize(width, width), Qt::KeepAspectRatio, Qt::TransformationMode::SmoothTransformation));
+		const int width = original_size.width() * 0.2;
+		const QPoint origin = QPoint(original_size.width() - width, 0);
+		painter.drawImage(origin, QImage(":/Icons/custom_config_2.png").scaled(QSize(width, width), Qt::KeepAspectRatio, Qt::TransformationMode::SmoothTransformation));
 	}
 
 	painter.end();
 
-	return QPixmap::fromImage(scaled);
+	return QPixmap::fromImage(image.scaled(m_Icon_Size, Qt::KeepAspectRatio, Qt::TransformationMode::SmoothTransformation));
+}
+
+void game_list_frame::ShowCustomConfigIcon(QTableWidgetItem* item, bool enabled)
+{
+	auto game = GetGameInfoFromItem(item);
+	if (game == nullptr)
+	{
+		return;
+	}
+
+	game->hasCustomConfig = enabled;
+	game->pxmap = PaintedPixmap(game->icon, enabled);
+
+	if (!m_isListLayout)
+	{
+		int r = m_xgrid->currentItem()->row(), c = m_xgrid->currentItem()->column();
+		m_xgrid->addItem(game->pxmap, qstr(game->info.name).simplified(), r, c);
+		m_xgrid->item(r, c)->setData(gui::game_role, QVariant::fromValue(game));
+	}
+	else if (enabled)
+	{
+		m_gameList->item(item->row(), gui::column_name)->setIcon(QIcon(":/Icons/custom_config.png"));
+	}
+	else
+	{
+		m_gameList->setItem(item->row(), gui::column_name, new custom_table_widget_item(game->info.name));
+	}
 }
 
 void game_list_frame::ResizeIcons(const int& sliderPos)
 {
 	m_icon_size_index = sliderPos;
-	m_Icon_Size = sizeFromSlider(sliderPos);
+	m_Icon_Size = gui_settings::SizeFromSlider(sliderPos);
 
 	RepaintIcons();
 }
@@ -787,9 +974,9 @@ void game_list_frame::RepaintIcons(const bool& fromSettings)
 {
 	if (fromSettings)
 	{
-		if (xgui_settings->GetValue(gui::m_enableUIColors).toBool())
+		if (m_gui_settings->GetValue(gui::m_enableUIColors).toBool())
 		{
-			m_Icon_Color = xgui_settings->GetValue(gui::gl_iconColor).value<QColor>();
+			m_Icon_Color = m_gui_settings->GetValue(gui::gl_iconColor).value<QColor>();
 		}
 		else
 		{
@@ -799,7 +986,7 @@ void game_list_frame::RepaintIcons(const bool& fromSettings)
 
 	for (auto& game : m_game_data)
 	{
-		game.pxmap = PaintedPixmap(game.icon, game.hasCustomConfig);
+		game->pxmap = PaintedPixmap(game->icon, game->hasCustomConfig);
 	}
 
 	Refresh();
@@ -815,7 +1002,7 @@ void game_list_frame::SetListMode(const bool& isList)
 	m_oldLayoutIsList = m_isListLayout;
 	m_isListLayout = isList;
 
-	xgui_settings->SetValue(gui::gl_listMode, isList);
+	m_gui_settings->SetValue(gui::gl_listMode, isList);
 
 	Refresh(true);
 
@@ -875,7 +1062,59 @@ bool game_list_frame::eventFilter(QObject *object, QEvent *event)
 				return true;
 			}
 		}
+		else
+		{
+			if (keyEvent->key() == Qt::Key_Enter || keyEvent->key() == Qt::Key_Return)
+			{
+				QTableWidgetItem* item;
+
+				if (object == m_gameList)
+					item = m_gameList->item(m_gameList->currentRow(), gui::column_icon);
+				else
+					item = m_xgrid->currentItem();
+
+				if (!item || !item->isSelected())
+					return false;
+
+				game_info gameinfo = GetGameInfoFromItem(item);
+
+				if (gameinfo.get() == nullptr)
+					return false;
+
+				LOG_NOTICE(LOADER, "Booting from gamelist by pressing %s...", keyEvent->key() == Qt::Key_Enter ? "Enter" : "Return");
+				Q_EMIT RequestBoot(gameinfo->info.path);
+
+				return true;
+			}
+		}
 	}
+	else if (event->type() == QEvent::ToolTip)
+	{
+		QHelpEvent *helpEvent = static_cast<QHelpEvent *>(event);
+		QTableWidgetItem* item;
+
+		if (m_isListLayout)
+		{
+			item = m_gameList->itemAt(helpEvent->globalPos());
+		}
+		else
+		{
+			item = m_xgrid->itemAt(helpEvent->globalPos());
+		}
+
+		if (item && !item->toolTip().isEmpty() && (!m_isListLayout || item->column() == gui::column_name || item->column() == gui::column_serial))
+		{
+			QToolTip::showText(helpEvent->globalPos(), item->toolTip());
+		}
+		else
+		{
+			QToolTip::hideText();
+			event->ignore();
+		}
+
+		return true;
+	}
+
 	return QDockWidget::eventFilter(object, event);
 }
 
@@ -891,14 +1130,6 @@ int game_list_frame::PopulateGameList()
 	m_gameList->clearContents();
 	m_gameList->setRowCount((int)m_game_data.size());
 
-	auto l_GetItem = [](const std::string& text)
-	{
-		QTableWidgetItem* curr = new QTableWidgetItem;
-		curr->setFlags(curr->flags() & ~Qt::ItemIsEditable);
-		curr->setText(qstr(text).simplified()); // simplified() forces single line text
-		return curr;
-	};
-
 	int row = 0, index = -1;
 	for (const auto& game : m_game_data)
 	{
@@ -907,41 +1138,60 @@ int game_list_frame::PopulateGameList()
 		if (!IsEntryVisible(game))
 			continue;
 
-		// Icon
-		QTableWidgetItem* icon_item = new QTableWidgetItem;
-		icon_item->setFlags(icon_item->flags() & ~Qt::ItemIsEditable);
-		icon_item->setData(Qt::DecorationRole, game.pxmap);
-		icon_item->setData(Qt::UserRole, index);
+		const QString name = qstr(game->info.name).simplified();
+		const QString serial = qstr(game->info.serial);
+		const QString notes = m_notes[serial];
 
-		QTableWidgetItem* title_item = l_GetItem(game.info.name);
-		if (game.hasCustomConfig)
+		// Icon
+		custom_table_widget_item* icon_item = new custom_table_widget_item;
+		icon_item->setData(Qt::DecorationRole, game->pxmap);
+		icon_item->setData(Qt::UserRole, index, true);
+		icon_item->setData(gui::game_role, QVariant::fromValue(game));
+
+		// Title
+		custom_table_widget_item* title_item = new custom_table_widget_item(game->info.name);
+		if (game->hasCustomConfig)
 		{
-			title_item->setIcon(QIcon(":/Icons/cog_black.png"));
+			title_item->setIcon(QIcon(":/Icons/custom_config.png"));
 		}
+
+		// Serial
+		custom_table_widget_item* serial_item = new custom_table_widget_item(game->info.serial);
+
+		if (!notes.isEmpty())
+		{
+			const QString tool_tip = tr("%0 [%1]\n\nNotes:\n%2").arg(name).arg(serial).arg(notes);
+			title_item->setToolTip(tool_tip);
+			serial_item->setToolTip(tool_tip);
+		}
+
+		// Move Support (http://www.psdevwiki.com/ps3/PARAM.SFO#ATTRIBUTE)
+		bool supports_move = game->info.attr & 0x800000;
 
 		// Compatibility
 		custom_table_widget_item* compat_item = new custom_table_widget_item;
-		compat_item->setFlags(compat_item->flags() & ~Qt::ItemIsEditable);
-		compat_item->setText(game.compat.text + (game.compat.date.isEmpty() ? "" : " (" + game.compat.date + ")"));
-		compat_item->setData(Qt::UserRole, game.compat.index);
-		compat_item->setToolTip(game.compat.tooltip);
-		if (!game.compat.color.isEmpty())
+		compat_item->setText(game->compat.text + (game->compat.date.isEmpty() ? "" : " (" + game->compat.date + ")"));
+		compat_item->setData(Qt::UserRole, game->compat.index, true);
+		compat_item->setToolTip(game->compat.tooltip);
+		if (!game->compat.color.isEmpty())
 		{
-			compat_item->setData(Qt::DecorationRole, compat_pixmap(game.compat.color));
+			compat_item->setData(Qt::DecorationRole, compat_pixmap(game->compat.color));
 		}
+
 		m_gameList->setItem(row, gui::column_icon,       icon_item);
 		m_gameList->setItem(row, gui::column_name,       title_item);
-		m_gameList->setItem(row, gui::column_serial,     l_GetItem(game.info.serial));
-		m_gameList->setItem(row, gui::column_firmware,   l_GetItem(game.info.fw));
-		m_gameList->setItem(row, gui::column_version,    l_GetItem(game.info.app_ver));
-		m_gameList->setItem(row, gui::column_category,   l_GetItem(game.info.category));
-		m_gameList->setItem(row, gui::column_path,       l_GetItem(game.info.path));
-		m_gameList->setItem(row, gui::column_resolution, l_GetItem(GetStringFromU32(game.info.resolution, resolution::mode, true)));
-		m_gameList->setItem(row, gui::column_sound,      l_GetItem(GetStringFromU32(game.info.sound_format, sound::format, true)));
-		m_gameList->setItem(row, gui::column_parental,   l_GetItem(GetStringFromU32(game.info.parental_lvl, parental::level)));
+		m_gameList->setItem(row, gui::column_serial,     serial_item);
+		m_gameList->setItem(row, gui::column_firmware,   new custom_table_widget_item(game->info.fw));
+		m_gameList->setItem(row, gui::column_version,    new custom_table_widget_item(game->info.app_ver));
+		m_gameList->setItem(row, gui::column_category,   new custom_table_widget_item(game->info.category));
+		m_gameList->setItem(row, gui::column_path,       new custom_table_widget_item(game->info.path));
+		m_gameList->setItem(row, gui::column_move,       new custom_table_widget_item(sstr(supports_move ? tr("Supported") : tr("Not Supported")), Qt::UserRole, !supports_move));
+		m_gameList->setItem(row, gui::column_resolution, new custom_table_widget_item(GetStringFromU32(game->info.resolution, resolution::mode, true)));
+		m_gameList->setItem(row, gui::column_sound,      new custom_table_widget_item(GetStringFromU32(game->info.sound_format, sound::format, true)));
+		m_gameList->setItem(row, gui::column_parental,   new custom_table_widget_item(GetStringFromU32(game->info.parental_lvl, parental::level), Qt::UserRole, game->info.parental_lvl));
 		m_gameList->setItem(row, gui::column_compat,     compat_item);
 
-		if (selected_item == game.info.icon_path)
+		if (selected_item == game->info.icon_path)
 		{
 			result = row;
 		}
@@ -974,14 +1224,14 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 		m_xgrid = new game_list_grid(image_size, image_color, m_Margin_Factor, m_Text_Factor, showText);
 	}
 
-	// Get list of matching apps and their index
-	QList<QPair<GUI_GameInfo*, int>> matching_apps;
+	// Get list of matching apps
+	QList<game_info> matching_apps;
 
-	for (uint i = 0; i < m_game_data.size(); i++)
+	for (const auto& app : m_game_data)
 	{
-		if (IsEntryVisible(m_game_data[i]))
+		if (IsEntryVisible(app))
 		{
-			matching_apps.append(QPair<GUI_GameInfo*, int>(&m_game_data[i], i));
+			matching_apps.push_back(app);
 		}
 	}
 
@@ -992,27 +1242,35 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 	{ // For whatever reason, 0%x is division by zero.  Absolute nonsense by definition of modulus.  But, I'll acquiesce.
 		return;
 	}
-	if (maxCols == 0)
-	{
-		maxCols = 1;
-	}
-	if (maxCols > entries)
-	{
-		maxCols = entries;
-	}
+
+	maxCols = std::clamp(maxCols, 1, entries);
 
 	int needsExtraRow = (entries % maxCols) != 0;
 	int maxRows = needsExtraRow + entries / maxCols;
 	m_xgrid->setRowCount(maxRows);
 	m_xgrid->setColumnCount(maxCols);
 
+	QString title, serial, notes;
+
 	for (const auto& app : matching_apps)
 	{
-		const QString title = qstr(app.first->info.name).simplified(); // simplified() forces single line text
+		title = qstr(app->info.name).simplified(); // simplified() forces single line text
+		serial = qstr(app->info.serial);
+		notes = m_notes[serial];
 
-		m_xgrid->addItem(app.first->pxmap, title, app.second, r, c);
+		m_xgrid->addItem(app->pxmap, title,  r, c);
+		m_xgrid->item(r, c)->setData(gui::game_role, QVariant::fromValue(app));
 
-		if (selected_item == app.first->info.icon_path)
+		if (!notes.isEmpty())
+		{
+			m_xgrid->item(r, c)->setToolTip(tr("%0 [%1]\n\nNotes:\n%2").arg(title).arg(serial).arg(notes));
+		}
+		else
+		{
+			m_xgrid->item(r, c)->setToolTip(tr("%0 [%1]").arg(title).arg(serial));
+		}
+
+		if (selected_item == app->info.icon_path)
 		{
 			m_xgrid->setCurrentItem(m_xgrid->item(r, c));
 		}
@@ -1030,7 +1288,6 @@ void game_list_frame::PopulateGameGrid(int maxCols, const QSize& image_size, con
 		{
 			QTableWidgetItem* emptyItem = new QTableWidgetItem();
 			emptyItem->setFlags(Qt::NoItemFlags);
-			emptyItem->setData(Qt::UserRole, -1);
 			m_xgrid->setItem(r, col, emptyItem);
 		}
 	}
@@ -1061,10 +1318,16 @@ std::string game_list_frame::CurrentSelectionIconPath()
 	if (m_gameList->selectedItems().count())
 	{
 		QTableWidgetItem* item = m_oldLayoutIsList ? m_gameList->item(m_gameList->currentRow(), 0) : m_xgrid->currentItem();
-		int ind = item->data(Qt::UserRole).toInt();
+		QVariant var = item->data(gui::game_role);
 
-		if (ind < m_game_data.size())
-			selection = m_game_data.at(ind).info.icon_path;
+		if (var.canConvert<game_info>())
+		{
+			auto game = var.value<game_info>();
+			if (game)
+			{
+				selection = game->info.icon_path;
+			}
+		}
 	}
 
 	m_oldLayoutIsList = m_isListLayout;
@@ -1100,4 +1363,20 @@ std::string game_list_frame::GetStringFromU32(const u32& key, const std::map<u32
 	}
 
 	return sstr(string.join(", "));
+}
+
+game_info game_list_frame::GetGameInfoFromItem(QTableWidgetItem* item)
+{
+	if (item == nullptr)
+	{
+		return nullptr;
+	}
+
+	QVariant var = item->data(gui::game_role);
+	if (!var.canConvert<game_info>())
+	{
+		return nullptr;
+	}
+
+	return var.value<game_info>();
 }

@@ -557,9 +557,6 @@
     <ClCompile Include="rpcs3qt\msg_dialog_frame.cpp">
       <Filter>Gui\message dialog</Filter>
     </ClCompile>
-    <ClCompile Include="rpcs3qt\syntax_highlighter.cpp">
-      <Filter>Generated Files\Debug</Filter>
-    </ClCompile>
     <ClCompile Include="evdev_joystick_handler.cpp">
       <Filter>Io\evdev</Filter>
     </ClCompile>
@@ -604,6 +601,45 @@
     </ClCompile>
     <ClCompile Include="QTGeneratedFiles\Debug - LLVM\moc_register_editor_dialog.cpp">
       <Filter>Generated Files\Debug - LLVM</Filter>
+    </ClCompile>
+    <ClCompile Include="rpcs3qt\breakpoint_handler.cpp">
+      <Filter>Gui\debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="rpcs3qt\debugger_list.cpp">
+      <Filter>Gui\debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Release - LLVM\moc_debugger_list.cpp">
+      <Filter>Generated Files\Release - LLVM</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Debug\moc_debugger_list.cpp">
+      <Filter>Generated Files\Debug</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Release\moc_debugger_list.cpp">
+      <Filter>Generated Files\Release</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Debug - LLVM\moc_debugger_list.cpp">
+      <Filter>Generated Files\Debug - LLVM</Filter>
+    </ClCompile>
+    <ClCompile Include="rpcs3qt\breakpoint_list.cpp">
+      <Filter>Gui\debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Release - LLVM\moc_breakpoint_list.cpp">
+      <Filter>Generated Files\Release - LLVM</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Debug\moc_breakpoint_list.cpp">
+      <Filter>Generated Files\Debug</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Release\moc_breakpoint_list.cpp">
+      <Filter>Generated Files\Release</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\Debug - LLVM\moc_breakpoint_list.cpp">
+      <Filter>Generated Files\Debug - LLVM</Filter>
+    </ClCompile>
+    <ClCompile Include="QTGeneratedFiles\qrc_windows.cpp">
+      <Filter>Generated Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rpcs3qt\_discord_utils.cpp">
+      <Filter>Gui\utils</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -673,9 +709,6 @@
     <ClInclude Include="rpcs3qt\trophy_manager_dialog.h">
       <Filter>Gui\trophy</Filter>
     </ClInclude>
-    <ClInclude Include="rpcs3qt\trophy_tree_widget_item.h">
-      <Filter>Gui\trophy</Filter>
-    </ClInclude>
     <ClInclude Include="evdev_joystick_handler.h">
       <Filter>Io\evdev</Filter>
     </ClInclude>
@@ -690,6 +723,9 @@
     </ClInclude>
     <ClInclude Include="rpcs3qt\custom_dock_widget.h">
       <Filter>Gui</Filter>
+    </ClInclude>
+    <ClInclude Include="rpcs3qt\_discord_utils.h">
+      <Filter>Gui\utils</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -798,9 +834,6 @@
     <CustomBuild Include="rpcs3qt\msg_dialog_frame.h">
       <Filter>Gui\message dialog</Filter>
     </CustomBuild>
-    <CustomBuild Include="rpcs3qt\syntax_highlighter.h">
-      <Filter>Generated Files</Filter>
-    </CustomBuild>
     <CustomBuild Include="rpcs3qt\save_manager_dialog.h">
       <Filter>Gui\save</Filter>
     </CustomBuild>
@@ -812,6 +845,18 @@
     </CustomBuild>
     <CustomBuild Include="rpcs3qt\register_editor_dialog.h">
       <Filter>Gui\debugger</Filter>
+    </CustomBuild>
+    <CustomBuild Include="rpcs3qt\debugger_list.h">
+      <Filter>Gui\debugger</Filter>
+    </CustomBuild>
+    <CustomBuild Include="rpcs3qt\breakpoint_handler.h">
+      <Filter>Gui\debugger</Filter>
+    </CustomBuild>
+    <CustomBuild Include="rpcs3qt\breakpoint_list.h">
+      <Filter>Gui\debugger</Filter>
+    </CustomBuild>
+    <CustomBuild Include="windows.qrc">
+      <Filter>Resource Files</Filter>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>

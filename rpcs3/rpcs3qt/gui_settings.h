@@ -39,6 +39,11 @@ namespace gui
 {
 	static QString stylesheet;
 
+	enum custom_roles
+	{
+		game_role = Qt::UserRole + 1337,
+	};
+
 	enum game_list_columns
 	{
 		column_icon,
@@ -48,12 +53,47 @@ namespace gui
 		column_version,
 		column_category,
 		column_path,
+		column_move,
 		column_resolution,
 		column_sound,
 		column_parental,
 		column_compat,
 
 		column_count
+	};
+
+	inline QString get_game_list_column_name(game_list_columns col)
+	{
+		switch (col)
+		{
+		case column_icon:
+			return "column_icon";
+		case column_name:
+			return "column_name";
+		case column_serial:
+			return "column_serial";
+		case column_firmware:
+			return "column_firmware";
+		case column_version:
+			return "column_version";
+		case column_category:
+			return "column_category";
+		case column_path:
+			return "column_path";
+		case column_move:
+			return "column_move";
+		case column_resolution:
+			return "column_resolution";
+		case column_sound:
+			return "column_sound";
+		case column_parental:
+			return "column_parental";
+		case column_compat:
+			return "column_compat";
+		case column_count:
+		default:
+			return "";
+		}
 	};
 
 	const QSize gl_icon_size_min    = QSize(40, 22);
@@ -86,11 +126,9 @@ namespace gui
 	const QString gs_frame    = "GSFrame";
 	const QString trophy      = "Trophy";
 	const QString savedata    = "SaveData";
+	const QString notes       = "Notes";
 
-	const QColor gl_icon_color       = QColor(209, 209, 209, 255);
-	const QColor mw_tool_icon_color  = QColor( 64,  64,  64, 255);
-	const QColor mw_tool_bar_color   = QColor(227, 227, 227, 255);
-	const QColor mw_thumb_icon_color = QColor(  0, 100, 231, 255);
+	const QColor gl_icon_color = QColor(36, 36, 36, 255);
 
 	const gui_save rg_freeze  = gui_save(main_window, "recentGamesFrozen", false);
 	const gui_save rg_entries = gui_save(main_window, "recentGamesNames",  QVariant::fromValue(q_pair_list()));
@@ -110,8 +148,6 @@ namespace gui
 	const gui_save mw_logger         = gui_save(main_window, "loggerVisible",   true);
 	const gui_save mw_gamelist       = gui_save(main_window, "gamelistVisible", true);
 	const gui_save mw_toolBarVisible = gui_save(main_window, "toolBarVisible",  true);
-	const gui_save mw_toolBarColor   = gui_save(main_window, "toolBarColor",    mw_tool_bar_color);
-	const gui_save mw_toolIconColor  = gui_save(main_window, "toolIconColor",   mw_tool_icon_color);
 	const gui_save mw_geometry       = gui_save(main_window, "geometry",        QByteArray());
 	const gui_save mw_windowState    = gui_save(main_window, "windowState",     QByteArray());
 	const gui_save mw_mwState        = gui_save(main_window, "wwState",         QByteArray());
@@ -157,6 +193,8 @@ namespace gui
 	const gui_save m_saveNotes         = gui_save(meta, "saveNotes",         QVariantMap());
 	const gui_save m_showDebugTab      = gui_save(meta, "showDebugTab",      false);
 	const gui_save m_enableUIColors    = gui_save(meta, "enableUIColors",    false);
+	const gui_save m_richPresence      = gui_save(meta, "useRichPresence",   true);
+	const gui_save m_discordState      = gui_save(meta, "discordState",      "");
 
 	const gui_save gs_disableMouse = gui_save(gs_frame, "disableMouse", false);
 	const gui_save gs_resize       = gui_save(gs_frame, "resize",       false);
@@ -164,6 +202,7 @@ namespace gui
 	const gui_save gs_height       = gui_save(gs_frame, "height",       720);
 
 	const gui_save tr_icon_height   = gui_save(trophy, "icon_height",   75);
+	const gui_save tr_game_iconSize = gui_save(trophy, "game_iconSize", 25);
 	const gui_save tr_show_locked   = gui_save(trophy, "show_locked",   true);
 	const gui_save tr_show_unlocked = gui_save(trophy, "show_unlocked", true);
 	const gui_save tr_show_hidden   = gui_save(trophy, "show_hidden",   false);
@@ -172,6 +211,9 @@ namespace gui
 	const gui_save tr_show_gold     = gui_save(trophy, "show_gold",     true);
 	const gui_save tr_show_platinum = gui_save(trophy, "show_platinum", true);
 	const gui_save tr_geometry      = gui_save(trophy, "geometry",      QByteArray());
+	const gui_save tr_splitterState = gui_save(trophy, "splitterState", QByteArray());
+	const gui_save tr_games_state   = gui_save(trophy, "games_state",   QByteArray());
+	const gui_save tr_trophy_state  = gui_save(trophy, "trophy_state",  QByteArray());
 
 	const gui_save sd_geometry = gui_save(savedata, "geometry", QByteArray());
 }
@@ -193,6 +235,7 @@ public:
 
 	bool GetCategoryVisibility(int cat);
 	QVariant GetValue(const gui_save& entry);
+	QVariant GetValue(const QString& key, const QString& name, const QString& def);
 	QVariant List2Var(const q_pair_list& list);
 	q_pair_list Var2List(const QVariant &var);
 
@@ -211,6 +254,7 @@ public Q_SLOTS:
 
 	/** Write value to entry */
 	void SetValue(const gui_save& entry, const QVariant& value);
+	void SetValue(const QString& key, const QString& name, const QVariant& value);
 
 	/** Sets the visibility of the chosen category. */
 	void SetCategoryVisibility(int cat, const bool& val);
@@ -220,6 +264,9 @@ public Q_SLOTS:
 	void SetCustomColor(int col, const QColor& val);
 
 	void SaveCurrentConfig(const QString& friendlyName);
+
+	static QSize SizeFromSlider(int pos);
+	static gui_save GetGuiSaveForColumn(int col);
 
 private:
 	QString ComputeSettingsDir();

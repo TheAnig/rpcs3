@@ -29,6 +29,34 @@ namespace rsx
 		flush_once = 1
 	};
 
+	struct typeless_xfer
+	{
+		bool src_is_typeless = false;
+		bool dst_is_typeless = false;
+		bool src_is_depth = false;
+		bool dst_is_depth = false;
+		u32 src_gcm_format = 0;
+		u32 dst_gcm_format = 0;
+		f32 src_scaling_hint = 1.f;
+		f32 dst_scaling_hint = 1.f;
+
+		void analyse()
+		{
+			if (src_is_typeless && dst_is_typeless)
+			{
+				if (src_scaling_hint == dst_scaling_hint &&
+					src_scaling_hint != 1.f)
+				{
+					if (src_is_depth == dst_is_depth)
+					{
+						src_is_typeless = dst_is_typeless = false;
+						src_scaling_hint = dst_scaling_hint = 1.f;
+					}
+				}
+			}
+		}
+	};
+
 	struct cached_texture_section : public rsx::buffered_section
 	{
 		u16 width;
@@ -42,10 +70,12 @@ namespace rsx
 		u32 gcm_format = 0;
 		bool pack_unpack_swap_bytes = false;
 
+		u64 sync_timestamp = 0;
 		bool synchronized = false;
 		bool flushed = false;
-		u32  num_writes = 0;
-		u32  required_writes = 1;
+
+		u32 num_writes = 0;
+		std::deque<u32> read_history;
 
 		u64 cache_tag = 0;
 
@@ -76,7 +106,7 @@ namespace rsx
 				if (depth && depth != this->depth)
 					return false;
 
-				if (mipmaps && mipmaps != this->mipmaps)
+				if (mipmaps && mipmaps > this->mipmaps)
 					return false;
 
 				return true;
@@ -92,7 +122,12 @@ namespace rsx
 
 		void reset_write_statistics()
 		{
-			required_writes = num_writes;
+			if (read_history.size() == 16)
+			{
+				read_history.pop_back();
+			}
+
+			read_history.push_front(num_writes);
 			num_writes = 0;
 		}
 
@@ -168,10 +203,73 @@ namespace rsx
 
 		bool writes_likely_completed() const
 		{
-			if (context == rsx::texture_upload_context::blit_engine_dst)
-				return num_writes >= required_writes;
+			// TODO: Move this to the miss statistics block
+			const auto num_records = read_history.size();
 
-			return true;
+			if (num_records == 0)
+			{
+				return false;
+			}
+			else if (num_records == 1)
+			{
+				return num_writes >= read_history.front();
+			}
+			else
+			{
+				const u32 last = read_history.front();
+				const u32 prev_last = read_history[1];
+
+				if (last == prev_last && num_records <= 3)
+				{
+					return num_writes >= last;
+				}
+
+				u32 compare = UINT32_MAX;
+				for (u32 n = 1; n < num_records; n++)
+				{
+					if (read_history[n] == last)
+					{
+						// Uncertain, but possible
+						compare = read_history[n - 1];
+
+						if (num_records > (n + 1))
+						{
+							if (read_history[n + 1] == prev_last)
+							{
+								// Confirmed with 2 values
+								break;
+							}
+						}
+					}
+				}
+
+				return num_writes >= compare;
+			}
+		}
+
+		void reprotect(utils::protection prot, const std::pair<u32, u32>& range)
+		{
+			//Reset properties and protect again
+			flushed = false;
+			synchronized = false;
+			sync_timestamp = 0ull;
+
+			protect(prot, range);
+		}
+
+		void reprotect(utils::protection prot)
+		{
+			//Reset properties and protect again
+			flushed = false;
+			synchronized = false;
+			sync_timestamp = 0ull;
+
+			protect(prot);
+		}
+
+		u64 get_sync_timestamp() const
+		{
+			return sync_timestamp;
 		}
 	};
 
@@ -243,7 +341,6 @@ namespace rsx
 		{
 			bool violation_handled = false;
 			std::vector<section_storage_type*> sections_to_flush; //Sections to be flushed
-			std::vector<section_storage_type*> sections_to_reprotect; //Sections to be protected after flushing
 			std::vector<section_storage_type*> sections_to_unprotect; //These sections are to be unpotected and discarded by caller
 			int num_flushable = 0;
 			u64 cache_tag = 0;
@@ -371,8 +468,10 @@ namespace rsx
 		std::atomic<u32> m_texture_memory_in_use = { 0 };
 
 		//Other statistics
+		const u32 m_cache_miss_threshold = 8; // How many times an address can miss speculative writing before it is considered high priority
 		std::atomic<u32> m_num_flush_requests = { 0 };
 		std::atomic<u32> m_num_cache_misses = { 0 };
+		std::atomic<u32> m_num_cache_speculative_writes = { 0 };
 		std::atomic<u32> m_num_cache_mispredictions = { 0 };
 
 		/* Helpers */
@@ -437,7 +536,7 @@ namespace rsx
 			{
 				for (auto &tex : found->second.data)
 				{
-					if (tex.is_locked() && tex.overlaps(address, false))
+					if (tex.is_locked() && tex.overlaps(address, rsx::overlap_test_bounds::protected_range))
 						return{ tex.get_protection(), &tex };
 				}
 			}
@@ -448,7 +547,7 @@ namespace rsx
 			{
 				for (auto &tex : found->second.data)
 				{
-					if (tex.is_locked() && tex.overlaps(address, false))
+					if (tex.is_locked() && tex.overlaps(address, rsx::overlap_test_bounds::protected_range))
 						return{ tex.get_protection(), &tex };
 				}
 			}
@@ -513,7 +612,11 @@ namespace rsx
 					if (tex.cache_tag == cache_tag) continue; //already processed
 					if (!tex.is_locked()) continue;	//flushable sections can be 'clean' but unlocked. TODO: Handle this better
 
-					auto overlapped = tex.overlaps_page(trampled_range, address, strict_range_check || tex.get_context() == rsx::texture_upload_context::blit_engine_dst);
+					const auto bounds_test = (strict_range_check || tex.get_context() == rsx::texture_upload_context::blit_engine_dst) ?
+						rsx::overlap_test_bounds::full_range :
+						rsx::overlap_test_bounds::protected_range;
+
+					auto overlapped = tex.overlaps_page(trampled_range, address, bounds_test);
 					if (std::get<0>(overlapped))
 					{
 						auto &new_range = std::get<1>(overlapped);
@@ -570,61 +673,110 @@ namespace rsx
 					}
 				}
 
-				std::vector<utils::protection> reprotections;
 				for (auto &obj : trampled_set)
 				{
-					bool to_reprotect = false;
-
-					if (!deferred_flush && !discard_only)
+					if (!discard_only)
 					{
-						if (!is_writing && obj.first->get_protection() != utils::protection::no)
+						bool collateral = false;
+						if (!deferred_flush)
 						{
-							to_reprotect = true;
-						}
-						else
-						{
-							if (rebuild_cache && allow_flush && obj.first->is_flushable())
+							if (!is_writing && obj.first->get_protection() != utils::protection::no)
 							{
-								const std::pair<u32, u32> null_check = std::make_pair(UINT32_MAX, 0);
-								to_reprotect = !std::get<0>(obj.first->overlaps_page(null_check, address, true));
+								collateral = true;
+							}
+							else
+							{
+								if (rebuild_cache && allow_flush && obj.first->is_flushable())
+								{
+									const std::pair<u32, u32> null_check = std::make_pair(UINT32_MAX, 0);
+									collateral = !std::get<0>(obj.first->overlaps_page(null_check, address, rsx::overlap_test_bounds::full_range));
+								}
 							}
 						}
+
+						if (collateral)
+						{
+							//False positive
+							continue;
+						}
+						else if (obj.first->is_flushable())
+						{
+							//Write if and only if no one else has trashed section memory already
+							//TODO: Proper section management should prevent this from happening
+							//TODO: Blit engine section merge support and/or partial texture memory buffering
+							if (!obj.first->test_memory_head() || !obj.first->test_memory_tail())
+							{
+								if (obj.first->get_memory_read_flags() == rsx::memory_read_flags::flush_always)
+								{
+									//Someone decided to overwrite memory specified as an active framebuffer
+									m_flush_always_cache.erase(obj.first->get_section_base());
+								}
+
+								//Contents clobbered, destroy this
+								obj.first->set_dirty(true);
+								m_unreleased_texture_objects++;
+
+								result.sections_to_unprotect.push_back(obj.first);
+							}
+							else if (!allow_flush)
+							{
+								result.sections_to_flush.push_back(obj.first);
+							}
+							else
+							{
+								if (obj.first->get_memory_read_flags() == rsx::memory_read_flags::flush_always)
+								{
+									// This region is set to always read from itself (unavoidable hard sync)
+									const auto ROP_timestamp = rsx::get_current_renderer()->ROP_sync_timestamp;
+									if (obj.first->is_synchronized() && ROP_timestamp > obj.first->get_sync_timestamp())
+									{
+										m_num_cache_mispredictions++;
+										m_num_cache_misses++;
+										obj.first->copy_texture(true, std::forward<Args>(extras)...);
+									}
+								}
+
+								if (!obj.first->flush(std::forward<Args>(extras)...))
+								{
+									//Missed address, note this
+									//TODO: Lower severity when successful to keep the cache from overworking
+									record_cache_miss(*obj.first);
+								}
+
+								m_num_flush_requests++;
+								result.sections_to_unprotect.push_back(obj.first);
+							}
+
+							continue;
+						}
+						else if (deferred_flush)
+						{
+							//allow_flush = false and not synchronized
+							result.sections_to_unprotect.push_back(obj.first);
+							continue;
+						}
 					}
 
-					if (to_reprotect)
-					{
-						result.sections_to_reprotect.push_back(obj.first);
-						reprotections.push_back(obj.first->get_protection());
-					}
-					else if (obj.first->is_flushable())
-					{
-						result.sections_to_flush.push_back(obj.first);
-					}
-					else if (!deferred_flush)
+					if (!obj.first->is_flushable())
 					{
 						obj.first->set_dirty(true);
 						m_unreleased_texture_objects++;
 					}
-					else
-					{
-						result.sections_to_unprotect.push_back(obj.first);
-					}
 
-					if (deferred_flush)
-						continue;
-
+					// Only unsynchronized (no-flush) sections should reach here, and only if the rendering thread is the caller
 					if (discard_only)
-						obj.first->discard();
-					else
-						obj.first->unprotect();
-
-					if (!to_reprotect)
 					{
+						obj.first->discard();
 						obj.second->remove_one();
+					}
+					else
+					{
+						// Delay unprotect in case there are sections to flush
+						result.sections_to_unprotect.push_back(obj.first);
 					}
 				}
 
-				if (deferred_flush)
+				if (deferred_flush && result.sections_to_flush.size())
 				{
 					result.num_flushable = static_cast<int>(result.sections_to_flush.size());
 					result.address_base = address;
@@ -632,31 +784,14 @@ namespace rsx
 					result.cache_tag = m_cache_update_tag.load(std::memory_order_consume);
 					return result;
 				}
-
-				if (result.sections_to_flush.size() > 0)
+				else
 				{
-					verify(HERE), allow_flush;
-
-					// Flush here before 'reprotecting' since flushing will write the whole span
-					for (const auto &tex : result.sections_to_flush)
+					//Flushes happen in one go, now its time to remove protection
+					for (auto& section : result.sections_to_unprotect)
 					{
-						if (!tex->flush(std::forward<Args>(extras)...))
-						{
-							//Missed address, note this
-							//TODO: Lower severity when successful to keep the cache from overworking
-							record_cache_miss(*tex);
-						}
-
-						m_num_flush_requests++;
+						section->unprotect();
+						m_cache[get_block_address(section->get_section_base())].remove_one();
 					}
-				}
-
-				int n = 0;
-				for (auto &tex: result.sections_to_reprotect)
-				{
-					tex->discard();
-					tex->protect(reprotections[n++]);
-					tex->set_dirty(false);
 				}
 
 				//Everything has been handled
@@ -693,7 +828,7 @@ namespace rsx
 		template <typename T, typename U>
 		inline void get_native_dimensions(T &width, T &height, U surface)
 		{
-			switch (surface->aa_mode)
+			switch (surface->read_aa_mode)
 			{
 			case rsx::surface_antialiasing::center_1_sample:
 				return;
@@ -711,7 +846,7 @@ namespace rsx
 		template <typename T, typename U>
 		inline void get_rsx_dimensions(T &width, T &height, U surface)
 		{
-			switch (surface->aa_mode)
+			switch (surface->read_aa_mode)
 			{
 			case rsx::surface_antialiasing::center_1_sample:
 				return;
@@ -729,7 +864,7 @@ namespace rsx
 		template <typename T>
 		inline f32 get_internal_scaling_x(T surface)
 		{
-			switch (surface->aa_mode)
+			switch (surface->read_aa_mode)
 			{
 			default:
 			case rsx::surface_antialiasing::center_1_sample:
@@ -744,7 +879,7 @@ namespace rsx
 		template <typename T>
 		inline f32 get_internal_scaling_y(T surface)
 		{
-			switch (surface->aa_mode)
+			switch (surface->read_aa_mode)
 			{
 			default:
 			case rsx::surface_antialiasing::center_1_sample:
@@ -779,7 +914,7 @@ namespace rsx
 					if (tex.get_section_base() > rsx_address)
 						continue;
 
-					if (!tex.is_dirty() && tex.overlaps(test, true))
+					if (!tex.is_dirty() && tex.overlaps(test, rsx::overlap_test_bounds::full_range))
 						results.push_back(&tex);
 				}
 			}
@@ -882,6 +1017,7 @@ namespace rsx
 			}
 
 			section_storage_type tmp;
+			update_cache_tag();
 			m_cache[block_address].add(tmp, rsx_address, rsx_size);
 			return m_cache[block_address].data.back();
 		}
@@ -928,15 +1064,51 @@ namespace rsx
 				no_access_range = region.get_min_max(no_access_range);
 			}
 
-			region.protect(utils::protection::no);
 			region.create(width, height, 1, 1, nullptr, image, pitch, false, std::forward<Args>(extras)...);
 			region.set_context(texture_upload_context::framebuffer_storage);
 			region.set_sampler_status(rsx::texture_sampler_status::status_uninitialized);
 			region.set_image_type(rsx::texture_dimension_extended::texture_dimension_2d);
-			update_cache_tag();
-
 			region.set_memory_read_flags(memory_read_flags::flush_always);
+			region.touch();
+
 			m_flush_always_cache[memory_address] = memory_size;
+
+			//Test for invalidated sections from surface cache occupying same address range
+			const auto &overlapped = find_texture_from_range(memory_address, memory_size);
+			if (overlapped.size() > 1)
+			{
+				for (auto surface : overlapped)
+				{
+					if (surface == &region)
+						continue;
+
+					if (surface->get_context() != rsx::texture_upload_context::framebuffer_storage)
+					{
+						m_unreleased_texture_objects++;
+					}
+					else
+					{
+						if (surface->get_section_base() != memory_address)
+							//HACK: preserve other overlapped sections despite overlap unless new section is superseding
+							//TODO: write memory to cell or redesign sections to preserve the data
+							continue;
+					}
+
+					//Memory is shared with another surface
+					//Discard it - the backend should ensure memory contents are preserved if needed
+					surface->set_dirty(true);
+
+					if (surface->is_locked())
+					{
+						surface->unprotect();
+						m_cache[get_block_address(surface->get_section_base())].remove_one();
+					}
+				}
+			}
+
+			// Delay protection until here in case the invalidation block above has unprotected pages in this range
+			region.reprotect(utils::protection::no, { 0, memory_size });
+			update_cache_tag();
 		}
 
 		void set_memory_read_flags(u32 memory_address, u32 memory_size, memory_read_flags flags)
@@ -958,25 +1130,26 @@ namespace rsx
 		}
 
 		template <typename ...Args>
-		bool flush_memory_to_cache(u32 memory_address, u32 memory_size, bool skip_synchronized, Args&&... extra)
+		bool flush_memory_to_cache(u32 memory_address, u32 memory_size, bool skip_synchronized, u32 allowed_types_mask, Args&&... extra)
 		{
 			writer_lock lock(m_cache_mutex);
 			section_storage_type* region = find_flushable_section(memory_address, memory_size);
 
-			//TODO: Make this an assertion
+			//Check if section was released, usually if cell overwrites a currently bound render target
 			if (region == nullptr)
-			{
-				LOG_ERROR(RSX, "Failed to find section for render target 0x%X + 0x%X", memory_address, memory_size);
-				return false;
-			}
+				return true;
 
 			if (skip_synchronized && region->is_synchronized())
 				return false;
+
+			if ((allowed_types_mask & region->get_context()) == 0)
+				return true;
 
 			if (!region->writes_likely_completed())
 				return true;
 
 			region->copy_texture(false, std::forward<Args>(extra)...);
+			m_num_cache_speculative_writes++;
 			return true;
 		}
 
@@ -1013,7 +1186,7 @@ namespace rsx
 					if (tex.is_dirty()) continue;
 					if (!tex.is_flushable()) continue;
 
-					if (tex.overlaps(address, false))
+					if (tex.overlaps(address, rsx::overlap_test_bounds::protected_range))
 						return std::make_tuple(true, &tex);
 				}
 			}
@@ -1037,7 +1210,7 @@ namespace rsx
 					if (tex.is_dirty()) continue;
 					if (!tex.is_flushable()) continue;
 
-					if (tex.overlaps(address, false))
+					if (tex.overlaps(address, rsx::overlap_test_bounds::protected_range))
 						return std::make_tuple(true, &tex);
 				}
 			}
@@ -1075,20 +1248,33 @@ namespace rsx
 
 			if (m_cache_update_tag.load(std::memory_order_consume) == data.cache_tag)
 			{
-				std::vector<utils::protection> old_protections;
-				for (auto &tex : data.sections_to_reprotect)
+				//1. Write memory to cpu side
+				for (auto &tex : data.sections_to_flush)
 				{
 					if (tex->is_locked())
 					{
-						old_protections.push_back(tex->get_protection());
-						tex->unprotect();
-					}
-					else
-					{
-						old_protections.push_back(utils::protection::rw);
+						if (tex->get_memory_read_flags() == rsx::memory_read_flags::flush_always)
+						{
+							// This region is set to always read from itself (unavoidable hard sync)
+							const auto ROP_timestamp = rsx::get_current_renderer()->ROP_sync_timestamp;
+							if (tex->is_synchronized() && ROP_timestamp > tex->get_sync_timestamp())
+							{
+								m_num_cache_mispredictions++;
+								m_num_cache_misses++;
+								tex->copy_texture(true, std::forward<Args>(extras)...);
+							}
+						}
+
+						if (!tex->flush(std::forward<Args>(extras)...))
+						{
+							record_cache_miss(*tex);
+						}
+
+						m_num_flush_requests++;
 					}
 				}
 
+				//2. Release all obsolete sections
 				for (auto &tex : data.sections_to_unprotect)
 				{
 					if (tex->is_locked())
@@ -1099,46 +1285,11 @@ namespace rsx
 					}
 				}
 
-				//TODO: This bit can cause race conditions if other threads are accessing this memory
-				//1. Force readback if surface is not synchronized yet to make unlocked part finish quickly
-				for (auto &tex : data.sections_to_flush)
-				{
-					if (tex->is_locked())
-					{
-						if (!tex->is_synchronized())
-						{
-							record_cache_miss(*tex);
-							tex->copy_texture(true, std::forward<Args>(extras)...);
-						}
-
-						m_cache[get_block_address(tex->get_section_base())].remove_one();
-					}
-				}
-
-				//TODO: Acquire global io lock here
-
-				//2. Unprotect all the memory
+				//3. Release all flushed sections
 				for (auto &tex : data.sections_to_flush)
 				{
 					tex->unprotect();
-				}
-
-				//3. Write all the memory
-				for (auto &tex : data.sections_to_flush)
-				{
-					tex->flush(std::forward<Args>(extras)...);
-					m_num_flush_requests++;
-				}
-
-				//Restore protection on the sections to reprotect
-				int n = 0;
-				for (auto &tex : data.sections_to_reprotect)
-				{
-					if (old_protections[n] != utils::protection::rw)
-					{
-						tex->discard();
-						tex->protect(old_protections[n++]);
-					}
+					m_cache[get_block_address(tex->get_section_base())].remove_one();
 				}
 			}
 			else
@@ -1193,23 +1344,30 @@ namespace rsx
 				//Reset since the data has changed
 				//TODO: Keep track of all this information together
 				m_cache_miss_statistics_table[memory_address] = { 0, memory_size, fmt };
-				return false;
 			}
 
-			//Properly synchronized - no miss
-			if (!value.misses) return false;
+			// By default, blit targets are always to be tested for readback
+			u32 flush_mask = rsx::texture_upload_context::blit_engine_dst;
 
-			//Auto flush if this address keeps missing (not properly synchronized)
-			if (value.misses > 16)
+			// Auto flush if this address keeps missing (not properly synchronized)
+			if (value.misses >= m_cache_miss_threshold)
 			{
-				//TODO: Determine better way of setting threshold
-				if (!flush_memory_to_cache(memory_address, memory_size, true, std::forward<Args>(extras)...))
-					value.misses--;
-
-				return true;
+				// Disable prediction if memory is flagged as flush_always
+				if (m_flush_always_cache.find(memory_address) == m_flush_always_cache.end())
+				{
+					// TODO: Determine better way of setting threshold
+					// Allow all types
+					flush_mask = 0xFF;
+				}
 			}
 
-			return false;
+			if (!flush_memory_to_cache(memory_address, memory_size, true, flush_mask, std::forward<Args>(extras)...) &&
+				value.misses > 0)
+			{
+				value.misses--;
+			}
+
+			return true;
 		}
 
 		void purge_dirty()
@@ -1547,8 +1705,8 @@ namespace rsx
 
 			if (requires_processing)
 			{
-				const auto w = rsx::apply_resolution_scale(internal_width, true);
-				const auto h = rsx::apply_resolution_scale(internal_height, true);
+				const auto w = rsx::apply_resolution_scale(std::min<u16>(internal_width, surface_width), true);
+				const auto h = rsx::apply_resolution_scale(std::min<u16>(internal_height, surface_height), true);
 
 				auto command = update_subresource_cache ? deferred_request_command::copy_image_dynamic : deferred_request_command::copy_image_static;
 				return { texptr->get_surface(), command, texaddr, format, 0, 0, w, h, 1,
@@ -1717,7 +1875,8 @@ namespace rsx
 					{
 						for (const auto &surface : overlapping_surfaces)
 						{
-							if (surface->get_context() != rsx::texture_upload_context::blit_engine_dst)
+							if (surface->get_context() != rsx::texture_upload_context::blit_engine_dst ||
+								!surface->overlaps(std::make_pair(texaddr, tex_size), rsx::overlap_test_bounds::confirmed_range))
 								continue;
 
 							if (surface->get_width() >= tex_width && surface->get_height() >= tex_height)
@@ -1786,25 +1945,34 @@ namespace rsx
 		{
 			//Since we will have dst in vram, we can 'safely' ignore the swizzle flag
 			//TODO: Verify correct behavior
-			bool is_depth_blit = false;
 			bool src_is_render_target = false;
 			bool dst_is_render_target = false;
 			bool dst_is_argb8 = (dst.format == rsx::blit_engine::transfer_destination_format::a8r8g8b8);
 			bool src_is_argb8 = (src.format == rsx::blit_engine::transfer_source_format::a8r8g8b8);
 
+			typeless_xfer typeless_info = {};
 			image_resource_type vram_texture = 0;
 			image_resource_type dest_texture = 0;
 
 			const u32 src_address = (u32)((u64)src.pixels - (u64)vm::base(0));
 			const u32 dst_address = (u32)((u64)dst.pixels - (u64)vm::base(0));
 
-			float scale_x = dst.scale_x;
-			float scale_y = dst.scale_y;
+			f32 scale_x = dst.scale_x;
+			f32 scale_y = dst.scale_y;
 
 			//Offset in x and y for src is 0 (it is already accounted for when getting pixels_src)
 			//Reproject final clip onto source...
-			const u16 src_w = (const u16)((f32)dst.clip_width / scale_x);
-			const u16 src_h = (const u16)((f32)dst.clip_height / scale_y);
+			u16 src_w = (u16)((f32)dst.clip_width / scale_x);
+			u16 src_h = (u16)((f32)dst.clip_height / scale_y);
+
+			u16 dst_w = dst.clip_width;
+			u16 dst_h = dst.clip_height;
+
+			if (!src_w || !src_h || !dst_w || !dst_h)
+			{
+				LOG_ERROR(RSX, "Blit engine request failed because of empty region");
+				return true;
+			}
 
 			//Check if src/dst are parts of render targets
 			auto dst_subres = m_rtts.get_surface_subresource_if_applicable(dst_address, dst.width, dst.clip_height, dst.pitch, true, false, false);
@@ -1848,6 +2016,51 @@ namespace rsx
 			if (!g_cfg.video.use_gpu_texture_scaling && !(src_is_render_target || dst_is_render_target))
 				return false;
 
+			if (src_is_render_target)
+			{
+				const auto surf = src_subres.surface;
+				auto src_bpp = surf->get_native_pitch() / surf->get_surface_width();
+				auto expected_bpp = src_is_argb8 ? 4 : 2;
+				if (src_bpp != expected_bpp)
+				{
+					//Enable type scaling in src
+					typeless_info.src_is_typeless = true;
+					typeless_info.src_is_depth = src_subres.is_depth_surface;
+					typeless_info.src_scaling_hint = (f32)src_bpp / expected_bpp;
+					typeless_info.src_gcm_format = src_is_argb8 ? CELL_GCM_TEXTURE_A8R8G8B8 : CELL_GCM_TEXTURE_R5G6B5;
+
+					src_w = (u16)(src_w / typeless_info.src_scaling_hint);
+					if (!src_subres.is_clipped)
+						src_subres.w = (u16)(src_subres.w / typeless_info.src_scaling_hint);
+					else
+						src_subres = m_rtts.get_surface_subresource_if_applicable(src_address, src_w, src_h, src.pitch, true, false, false);
+
+					verify(HERE), src_subres.surface != nullptr;
+				}
+			}
+
+			if (dst_is_render_target)
+			{
+				auto dst_bpp = dst_subres.surface->get_native_pitch() / dst_subres.surface->get_surface_width();
+				auto expected_bpp = dst_is_argb8 ? 4 : 2;
+				if (dst_bpp != expected_bpp)
+				{
+					//Enable type scaling in dst
+					typeless_info.dst_is_typeless = true;
+					typeless_info.dst_is_depth = dst_subres.is_depth_surface;
+					typeless_info.dst_scaling_hint = (f32)dst_bpp / expected_bpp;
+					typeless_info.dst_gcm_format = dst_is_argb8 ? CELL_GCM_TEXTURE_A8R8G8B8 : CELL_GCM_TEXTURE_R5G6B5;
+
+					dst_w = (u16)(dst_w / typeless_info.dst_scaling_hint);
+					if (!dst_subres.is_clipped)
+						dst_subres.w = (u16)(dst_subres.w / typeless_info.dst_scaling_hint);
+					else
+						dst_subres = m_rtts.get_surface_subresource_if_applicable(dst_address, dst_w, dst_h, dst.pitch, true, false, false);
+
+					verify(HERE), dst_subres.surface != nullptr;
+				}
+			}
+
 			reader_lock lock(m_cache_mutex);
 
 			//Check if trivial memcpy can perform the same task
@@ -1871,7 +2084,7 @@ namespace rsx
 			u16 max_dst_width = dst.width;
 			u16 max_dst_height = dst.height;
 			areai src_area = { 0, 0, src_w, src_h };
-			areai dst_area = { 0, 0, dst.clip_width, dst.clip_height };
+			areai dst_area = { 0, 0, dst_w, dst_h };
 
 			//1024 height is a hack (for ~720p buffers)
 			//It is possible to have a large buffer that goes up to around 4kx4k but anything above 1280x720 is rare
@@ -1949,7 +2162,7 @@ namespace rsx
 
 				dest_texture = dst_subres.surface->get_surface();
 
-				max_dst_width = dst_subres.surface->get_surface_width();
+				max_dst_width = (u16)(dst_subres.surface->get_surface_width() * typeless_info.dst_scaling_hint);
 				max_dst_height = dst_subres.surface->get_surface_height();
 			}
 
@@ -2000,7 +2213,7 @@ namespace rsx
 					rsx_subresource_layout subres = {};
 					subres.width_in_block = src.width;
 					subres.height_in_block = src.slice_h;
-					subres.pitch_in_bytes = pitch_in_block;
+					subres.pitch_in_block = pitch_in_block;
 					subres.depth = 1;
 					subres.data = { (const gsl::byte*)src.pixels, src.pitch * src.slice_h };
 					subresource_layout.push_back(subres);
@@ -2020,7 +2233,7 @@ namespace rsx
 					u16 src_subres_h = src_subres.h;
 					get_rsx_dimensions(src_subres_w, src_subres_h, src_subres.surface);
 
-					const int dst_width = (int)(src_subres_w * scale_x);
+					const int dst_width = (int)(src_subres_w * scale_x * typeless_info.src_scaling_hint);
 					const int dst_height = (int)(src_subres_h * scale_y);
 
 					dst_area.x2 = dst_area.x1 + dst_width;
@@ -2038,34 +2251,55 @@ namespace rsx
 				vram_texture = src_subres.surface->get_surface();
 			}
 
-			bool format_mismatch = false;
+			const bool src_is_depth = src_subres.is_depth_surface;
+			const bool dst_is_depth = dst_is_render_target? dst_subres.is_depth_surface :
+										dest_texture ? cached_dest->is_depth_texture() : src_is_depth;
 
-			if (src_subres.is_depth_surface)
+			//Type of blit decided by the source, destination use should adapt on the fly
+			const bool is_depth_blit = src_is_depth;
+
+			bool format_mismatch = (src_is_depth != dst_is_depth);
+			if (format_mismatch)
 			{
-				if (dest_texture)
+				if (dst_is_render_target)
 				{
-					if (dst_is_render_target)
-					{
-						if (!dst_subres.is_depth_surface)
-						{
-							LOG_ERROR(RSX, "Depth->RGBA blit requested but not supported");
-							return true;
-						}
-					}
-					else
-					{
-						if (!cached_dest->has_compatible_format(src_subres.surface))
-							format_mismatch = true;
-					}
+					LOG_ERROR(RSX, "Depth<->RGBA blit on a framebuffer requested but not supported");
+					return false;
 				}
-
-				is_depth_blit = true;
+			}
+			else if (src_is_render_target && cached_dest)
+			{
+				switch (cached_dest->get_gcm_format())
+				{
+				case CELL_GCM_TEXTURE_A8R8G8B8:
+				case CELL_GCM_TEXTURE_DEPTH24_D8:
+					format_mismatch = !dst_is_argb8;
+					break;
+				case CELL_GCM_TEXTURE_R5G6B5:
+				case CELL_GCM_TEXTURE_DEPTH16:
+					format_mismatch = dst_is_argb8;
+					break;
+				default:
+					format_mismatch = true;
+					break;
+				}
 			}
 
 			//TODO: Check for other types of format mismatch
 			if (format_mismatch)
 			{
 				lock.upgrade();
+
+				//Mark for removal as the memory is not reusable now
+				if (cached_dest->is_locked())
+				{
+					cached_dest->unprotect();
+					m_cache[get_block_address(cached_dest->get_section_base())].remove_one();
+				}
+
+				cached_dest->set_dirty(true);
+				m_unreleased_texture_objects++;
+
 				invalidate_range_impl_base(cached_dest->get_section_base(), cached_dest->get_section_size(), true, false, false, true, std::forward<Args>(extras)...);
 
 				dest_texture = 0;
@@ -2100,7 +2334,7 @@ namespace rsx
 			//Reproject clip offsets onto source to simplify blit
 			if (dst.clip_x || dst.clip_y)
 			{
-				const u16 scaled_clip_offset_x = (const u16)((f32)dst.clip_x / scale_x);
+				const u16 scaled_clip_offset_x = (const u16)((f32)dst.clip_x / (scale_x * typeless_info.src_scaling_hint));
 				const u16 scaled_clip_offset_y = (const u16)((f32)dst.clip_y / scale_y);
 
 				src_area.x1 += scaled_clip_offset_x;
@@ -2118,39 +2352,80 @@ namespace rsx
 					dst_is_argb8 ? rsx::texture_create_flags::default_component_order :
 					rsx::texture_create_flags::swapped_native_component_order;
 
-				dest_texture = create_new_texture(cmd, dst.rsx_address, dst.pitch * dst_dimensions.height,
+				//NOTE: Should upload from cpu instead of creating a blank texture
+				cached_dest = create_new_texture(cmd, dst.rsx_address, dst.pitch * dst_dimensions.height,
 					dst_dimensions.width, dst_dimensions.height, 1, 1,
 					gcm_format, rsx::texture_upload_context::blit_engine_dst, rsx::texture_dimension_extended::texture_dimension_2d,
-					channel_order, rsx::texture_colorspace::rgb_linear, rsx::default_remap_vector)->get_raw_texture();
+					channel_order, rsx::texture_colorspace::rgb_linear, rsx::default_remap_vector);
 
+				dest_texture = cached_dest->get_raw_texture();
 				m_texture_memory_in_use += dst.pitch * dst_dimensions.height;
 			}
-			else if (cached_dest)
-			{
-				if (!cached_dest->is_locked())
-				{
-					lock.upgrade();
 
-					cached_dest->reprotect(utils::protection::no);
+			if (cached_dest)
+			{
+				const bool notify = !cached_dest->is_locked();
+				const u32 mem_base = dst_area.y1 * dst.pitch;
+				const u32 mem_length = (dst.clip_height == 1)?
+					dst.clip_width * (dst_is_argb8? 4 : 2) :    // Lock full rows if its a rectangular section
+					dst.pitch * dst.clip_height;                // Lock only part of fist row if simple 1D array
+
+				lock.upgrade();
+
+				if (notify)
+				{
 					m_cache[get_block_address(cached_dest->get_section_base())].notify();
 				}
 				else if (cached_dest->is_synchronized())
 				{
-					//Prematurely read back
+					// Premature readback
 					m_num_cache_mispredictions++;
 				}
 
+				cached_dest->reprotect(utils::protection::no, { mem_base, mem_length });
 				cached_dest->touch();
 			}
+			else
+			{
+				verify(HERE), dst_is_render_target;
+			}
 
-			const f32 scale = rsx::get_resolution_scale();
-			if (src_is_render_target)
-				src_area = src_area * scale;
+			if (rsx::get_resolution_scale_percent() != 100)
+			{
+				const f32 resolution_scale = rsx::get_resolution_scale();
+				if (src_is_render_target)
+				{
+					if (src_subres.surface->get_surface_width() > g_cfg.video.min_scalable_dimension)
+					{
+						src_area.x1 = (u16)(src_area.x1 * resolution_scale);
+						src_area.x2 = (u16)(src_area.x2 * resolution_scale);
+					}
 
-			if (dst_is_render_target)
-				dst_area = dst_area * scale;
+					if (src_subres.surface->get_surface_height() > g_cfg.video.min_scalable_dimension)
+					{
+						src_area.y1 = (u16)(src_area.y1 * resolution_scale);
+						src_area.y2 = (u16)(src_area.y2 * resolution_scale);
+					}
+				}
 
-			blitter.scale_image(vram_texture, dest_texture, src_area, dst_area, interpolate, is_depth_blit);
+				if (dst_is_render_target)
+				{
+					if (dst_subres.surface->get_surface_width() > g_cfg.video.min_scalable_dimension)
+					{
+						dst_area.x1 = (u16)(dst_area.x1 * resolution_scale);
+						dst_area.x2 = (u16)(dst_area.x2 * resolution_scale);
+					}
+
+					if (dst_subres.surface->get_surface_height() > g_cfg.video.min_scalable_dimension)
+					{
+						dst_area.y1 = (u16)(dst_area.y1 * resolution_scale);
+						dst_area.y2 = (u16)(dst_area.y2 * resolution_scale);
+					}
+				}
+			}
+
+			typeless_info.analyse();
+			blitter.scale_image(vram_texture, dest_texture, src_area, dst_area, interpolate, is_depth_blit, typeless_info);
 			notify_surface_changed(dst.rsx_address);
 
 			blit_op_result result = true;
@@ -2177,18 +2452,28 @@ namespace rsx
 				if (m_cache_update_tag.load(std::memory_order_consume) != m_flush_always_update_timestamp)
 				{
 					writer_lock lock(m_cache_mutex);
+					bool update_tag = false;
 
 					for (const auto &It : m_flush_always_cache)
 					{
 						auto& section = find_cached_texture(It.first, It.second);
 						if (section.get_protection() != utils::protection::no)
 						{
-							auto &range = m_cache[get_block_address(It.first)];
-							section.reprotect(utils::protection::no);
-							range.notify();
+							if (section.exists())
+							{
+								//NOTE: find_cached_texture will increment block ctr
+								section.reprotect(utils::protection::no);
+								update_tag = true;
+							}
+							else
+							{
+								//This should never happen
+								LOG_ERROR(RSX, "Reprotection attempted on destroyed framebuffer section @ 0x%x+0x%x", It.first, It.second);
+							}
 						}
 					}
 
+					if (update_tag) update_cache_tag();
 					m_flush_always_update_timestamp = m_cache_update_tag.load(std::memory_order_consume);
 				}
 			}
@@ -2199,6 +2484,7 @@ namespace rsx
 			m_num_flush_requests.store(0u);
 			m_num_cache_misses.store(0u);
 			m_num_cache_mispredictions.store(0u);
+			m_num_cache_speculative_writes.store(0u);
 		}
 
 		virtual const u32 get_unreleased_textures_count() const
@@ -2219,6 +2505,11 @@ namespace rsx
 		virtual u32 get_num_cache_mispredictions() const
 		{
 			return m_num_cache_mispredictions;
+		}
+
+		virtual u32 get_num_cache_speculative_writes() const
+		{
+			return m_num_cache_speculative_writes;
 		}
 
 		virtual f32 get_cache_miss_ratio() const
@@ -2243,58 +2534,14 @@ namespace rsx
 
 		void tag_framebuffer(u32 texaddr)
 		{
-			if (!g_cfg.video.strict_rendering_mode)
-				return;
-
-			writer_lock lock(m_cache_mutex);
-
-			const auto protect_info = get_memory_protection(texaddr);
-			if (protect_info.first != utils::protection::rw)
-			{
-				if (protect_info.second->overlaps(texaddr, true))
-				{
-					if (protect_info.first == utils::protection::no)
-						return;
-
-					if (protect_info.second->get_context() != texture_upload_context::blit_engine_dst)
-					{
-						//TODO: Invalidate this section
-						LOG_TRACE(RSX, "Framebuffer memory occupied by regular texture!");
-					}
-				}
-
-				protect_info.second->unprotect();
-				vm::write32(texaddr, texaddr);
-				protect_info.second->protect(protect_info.first);
-				return;
-			}
-
-			vm::write32(texaddr, texaddr);
+			auto ptr = rsx::get_super_ptr(texaddr, 4).get<u32>();
+			*ptr = texaddr;
 		}
 
 		bool test_framebuffer(u32 texaddr)
 		{
-			if (!g_cfg.video.strict_rendering_mode)
-				return true;
-
-			if (g_cfg.video.write_color_buffers || g_cfg.video.write_depth_buffer)
-			{
-				writer_lock lock(m_cache_mutex);
-				auto protect_info = get_memory_protection(texaddr);
-				if (protect_info.first == utils::protection::no)
-				{
-					if (protect_info.second->overlaps(texaddr, true))
-						return true;
-
-					//Address isnt actually covered by the region, it only shares a page with it
-					protect_info.second->unprotect();
-					bool result = (vm::read32(texaddr) == texaddr);
-					protect_info.second->protect(utils::protection::no);
-					return result;
-				}
-			}
-
-			return vm::read32(texaddr) == texaddr;
+			auto ptr = rsx::get_super_ptr(texaddr, 4).get<u32>();
+			return *ptr == texaddr;
 		}
 	};
 }

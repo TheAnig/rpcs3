@@ -1,23 +1,26 @@
 #include "stdafx.h"
 #include "VKHelpers.h"
-
+#include "VKCompute.h"
 #include "Utilities/mutex.h"
 
 namespace vk
 {
-	context* g_current_vulkan_ctx = nullptr;
-	render_device g_current_renderer;
+	const context* g_current_vulkan_ctx = nullptr;
+	const render_device* g_current_renderer;
 
 	std::unique_ptr<image> g_null_texture;
 	std::unique_ptr<image_view> g_null_image_view;
+	std::unique_ptr<buffer> g_scratch_buffer;
+	std::unordered_map<u32, std::unique_ptr<image>> g_typeless_textures;
+	std::unordered_map<u32, std::unique_ptr<vk::compute_task>> g_compute_tasks;
 
 	VkSampler g_null_sampler = nullptr;
 
 	atomic_t<bool> g_cb_no_interrupt_flag { false };
 
 	//Driver compatibility workarounds
+	driver_vendor g_driver_vendor = driver_vendor::unknown;
 	bool g_drv_no_primitive_restart_flag = false;
-	bool g_drv_force_32bit_indices = false;
 	bool g_drv_sanitize_fp_values = false;
 	bool g_drv_disable_fence_reset = false;
 
@@ -108,105 +111,6 @@ namespace vk
 		return result;
 	}
 
-	VkFormat get_compatible_sampler_format(u32 format)
-	{
-		switch (format)
-		{
-		case CELL_GCM_TEXTURE_B8: return VK_FORMAT_R8_UNORM;
-		case CELL_GCM_TEXTURE_A1R5G5B5: return VK_FORMAT_A1R5G5B5_UNORM_PACK16;
-		case CELL_GCM_TEXTURE_A4R4G4B4: return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
-		case CELL_GCM_TEXTURE_R5G6B5: return VK_FORMAT_R5G6B5_UNORM_PACK16;
-		case CELL_GCM_TEXTURE_A8R8G8B8: return VK_FORMAT_B8G8R8A8_UNORM;
-		case CELL_GCM_TEXTURE_COMPRESSED_DXT1: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
-		case CELL_GCM_TEXTURE_COMPRESSED_DXT23: return VK_FORMAT_BC2_UNORM_BLOCK;
-		case CELL_GCM_TEXTURE_COMPRESSED_DXT45: return VK_FORMAT_BC3_UNORM_BLOCK;
-		case CELL_GCM_TEXTURE_G8B8: return VK_FORMAT_R8G8_UNORM;
-		case CELL_GCM_TEXTURE_R6G5B5: return VK_FORMAT_R5G6B5_UNORM_PACK16; // Expand, discard high bit?
-		case CELL_GCM_TEXTURE_DEPTH24_D8: return VK_FORMAT_D24_UNORM_S8_UINT; //TODO
-		case CELL_GCM_TEXTURE_DEPTH24_D8_FLOAT:	return VK_FORMAT_D24_UNORM_S8_UINT; //TODO
-		case CELL_GCM_TEXTURE_DEPTH16: return VK_FORMAT_D16_UNORM;
-		case CELL_GCM_TEXTURE_DEPTH16_FLOAT: return VK_FORMAT_D16_UNORM;
-		case CELL_GCM_TEXTURE_X16: return VK_FORMAT_R16_UNORM;
-		case CELL_GCM_TEXTURE_Y16_X16: return VK_FORMAT_R16G16_UNORM;
-		case CELL_GCM_TEXTURE_Y16_X16_FLOAT: return VK_FORMAT_R16G16_SFLOAT;
-		case CELL_GCM_TEXTURE_R5G5B5A1: return VK_FORMAT_R5G5B5A1_UNORM_PACK16;
-		case CELL_GCM_TEXTURE_W16_Z16_Y16_X16_FLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
-		case CELL_GCM_TEXTURE_W32_Z32_Y32_X32_FLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
-		case CELL_GCM_TEXTURE_X32_FLOAT: return VK_FORMAT_R32_SFLOAT;
-		case CELL_GCM_TEXTURE_D1R5G5B5: return VK_FORMAT_A1R5G5B5_UNORM_PACK16;
-		case CELL_GCM_TEXTURE_D8R8G8B8: return VK_FORMAT_B8G8R8A8_UNORM;
-		case CELL_GCM_TEXTURE_COMPRESSED_B8R8_G8R8: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;	// Expand
-		case CELL_GCM_TEXTURE_COMPRESSED_R8B8_R8G8: return VK_FORMAT_R8G8B8A8_UNORM; // Expand
-		case CELL_GCM_TEXTURE_COMPRESSED_HILO8: return VK_FORMAT_R8G8_UNORM;
-		case CELL_GCM_TEXTURE_COMPRESSED_HILO_S8: return VK_FORMAT_R8G8_SNORM;
-		case ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN) & CELL_GCM_TEXTURE_COMPRESSED_B8R8_G8R8: return VK_FORMAT_R8G8_UNORM; // Not right
-		case ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN) & CELL_GCM_TEXTURE_COMPRESSED_R8B8_R8G8: return VK_FORMAT_R8G8_UNORM; // Not right
-		}
-		fmt::throw_exception("Invalid or unsupported sampler format for texture format (0x%x)" HERE, format);
-	}
-
-	VkFormat get_compatible_srgb_format(VkFormat rgb_format)
-	{
-		switch (rgb_format)
-		{
-		case VK_FORMAT_B8G8R8A8_UNORM:
-			return VK_FORMAT_B8G8R8A8_SRGB;
-		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
-			return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
-		case VK_FORMAT_BC2_UNORM_BLOCK:
-			return VK_FORMAT_BC2_SRGB_BLOCK;
-		case VK_FORMAT_BC3_UNORM_BLOCK:
-			return VK_FORMAT_BC3_SRGB_BLOCK;
-		default:
-			return rgb_format;
-		}
-	}
-
-	u8 get_format_texel_width(const VkFormat format)
-	{
-		switch (format)
-		{
-		case VK_FORMAT_R8_UNORM:
-			return 1;
-		case VK_FORMAT_R16_UINT:
-		case VK_FORMAT_R16_SFLOAT:
-		case VK_FORMAT_R16_UNORM:
-		case VK_FORMAT_R8G8_UNORM:
-		case VK_FORMAT_R8G8_SNORM:
-		case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
-		case VK_FORMAT_R4G4B4A4_UNORM_PACK16:
-		case VK_FORMAT_R5G6B5_UNORM_PACK16:
-		case VK_FORMAT_R5G5B5A1_UNORM_PACK16:
-			return 2;
-		case VK_FORMAT_R32_UINT:
-		case VK_FORMAT_R32_SFLOAT:
-		case VK_FORMAT_R16G16_UNORM:
-		case VK_FORMAT_R16G16_SFLOAT:
-		case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
-		case VK_FORMAT_R8G8B8A8_UNORM:
-		case VK_FORMAT_B8G8R8A8_UNORM:
-		case VK_FORMAT_B8G8R8A8_SRGB:
-		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
-		case VK_FORMAT_BC2_UNORM_BLOCK:
-		case VK_FORMAT_BC3_UNORM_BLOCK:
-		case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
-		case VK_FORMAT_BC2_SRGB_BLOCK:
-		case VK_FORMAT_BC3_SRGB_BLOCK:
-			return 4;
-		case VK_FORMAT_R16G16B16A16_SFLOAT:
-			return 8;
-		case VK_FORMAT_R32G32B32A32_SFLOAT:
-			return 16;
-		case VK_FORMAT_D16_UNORM:
-			return 2;
-		case VK_FORMAT_D32_SFLOAT_S8_UINT: //TODO: Translate to D24S8
-		case VK_FORMAT_D24_UNORM_S8_UINT:
-			return 4;
-		}
-
-		fmt::throw_exception("Unexpected vkFormat 0x%X", (u32)format);
-	}
-
 	VkAllocationCallbacks default_callbacks()
 	{
 		VkAllocationCallbacks callbacks;
@@ -239,7 +143,7 @@ namespace vk
 		sampler_info.compareOp = VK_COMPARE_OP_NEVER;
 		sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
 
-		vkCreateSampler(g_current_renderer, &sampler_info, nullptr, &g_null_sampler);
+		vkCreateSampler(*g_current_renderer, &sampler_info, nullptr, &g_null_sampler);
 		return g_null_sampler;
 	}
 
@@ -248,11 +152,11 @@ namespace vk
 		if (g_null_image_view)
 			return g_null_image_view->value;
 
-		g_null_texture.reset(new image(g_current_renderer, get_memory_mapping(g_current_renderer.gpu()).device_local, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		g_null_texture.reset(new image(*g_current_renderer, g_current_renderer->get_memory_mapping().device_local, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			VK_IMAGE_TYPE_2D, VK_FORMAT_B8G8R8A8_UNORM, 4, 4, 1, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0));
 
-		g_null_image_view.reset(new image_view(g_current_renderer, g_null_texture->value, VK_IMAGE_VIEW_TYPE_2D,
+		g_null_image_view.reset(new image_view(*g_current_renderer, g_null_texture->value, VK_IMAGE_VIEW_TYPE_2D,
 			VK_FORMAT_B8G8R8A8_UNORM, {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A},
 			{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}));
 
@@ -267,6 +171,38 @@ namespace vk
 		return g_null_image_view->value;
 	}
 
+	vk::image* get_typeless_helper(VkFormat format)
+	{
+		auto create_texture = [&]()
+		{
+			return new vk::image(*g_current_renderer, g_current_renderer->get_memory_mapping().device_local, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				VK_IMAGE_TYPE_2D, format, 4096, 4096, 1, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0);
+		};
+
+		auto &ptr = g_typeless_textures[(u32)format];
+		if (!ptr)
+		{
+			auto _img = create_texture();
+			ptr.reset(_img);
+		}
+
+		return ptr.get();
+	}
+
+	vk::buffer* get_scratch_buffer()
+	{
+		if (!g_scratch_buffer)
+		{
+			// 32M disposable scratch memory
+			g_scratch_buffer = std::make_unique<vk::buffer>(*g_current_renderer, 32 * 0x100000,
+				g_current_renderer->get_memory_mapping().device_local, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0);
+		}
+
+		return g_scratch_buffer.get();
+	}
+
 	void acquire_global_submit_lock()
 	{
 		g_submit_mutex.lock();
@@ -277,84 +213,128 @@ namespace vk
 		g_submit_mutex.unlock();
 	}
 
+	void reset_compute_tasks()
+	{
+		for (const auto &p : g_compute_tasks)
+		{
+			p.second->free_resources();
+		}
+	}
+
 	void destroy_global_resources()
 	{
 		g_null_texture.reset();
-		g_null_image_view .reset();
+		g_null_image_view.reset();
+		g_scratch_buffer.reset();
+
+		g_typeless_textures.clear();
 
 		if (g_null_sampler)
-			vkDestroySampler(g_current_renderer, g_null_sampler, nullptr);
+			vkDestroySampler(*g_current_renderer, g_null_sampler, nullptr);
 
 		g_null_sampler = nullptr;
+
+		for (const auto& p : g_compute_tasks)
+		{
+			p.second->destroy();
+		}
+
+		g_compute_tasks.clear();
+	}
+
+	vk::mem_allocator_base* get_current_mem_allocator()
+	{
+		verify (HERE, g_current_renderer);
+		return g_current_renderer->get_allocator();
 	}
 
 	void set_current_thread_ctx(const vk::context &ctx)
 	{
-		g_current_vulkan_ctx = (vk::context *)&ctx;
+		g_current_vulkan_ctx = &ctx;
 	}
 
-	context *get_current_thread_ctx()
+	const context *get_current_thread_ctx()
 	{
 		return g_current_vulkan_ctx;
 	}
 
-	vk::render_device *get_current_renderer()
+	const vk::render_device *get_current_renderer()
 	{
-		return &g_current_renderer;
+		return g_current_renderer;
 	}
 
 	void set_current_renderer(const vk::render_device &device)
 	{
-		g_current_renderer = device;
-		const auto gpu_name = g_current_renderer.gpu().name();
+		g_current_renderer = &device;
+		g_cb_no_interrupt_flag.store(false);
+		g_drv_no_primitive_restart_flag = false;
+		g_drv_sanitize_fp_values = false;
+		g_drv_disable_fence_reset = false;
+		g_num_processed_frames = 0;
+		g_num_total_frames = 0;
+		g_driver_vendor = driver_vendor::unknown;
 
-		bool gcn4_proprietary = false;
-		const std::array<std::string, 8> black_listed =
-		{
-			// Black list all polaris unless its proven they dont have a problem with primitive restart
-			"RX 580",
-			"RX 570",
-			"RX 560",
-			"RX 550",
-			"RX 480",
-			"RX 470",
-			"RX 460",
-			"RX Vega",
-		};
+		const auto gpu_name = g_current_renderer->gpu().name();
 
-		for (const auto& test : black_listed)
+		//Radeon fails to properly handle degenerate primitives if primitive restart is enabled
+		//One has to choose between using degenerate primitives or primitive restart to break up lists but not both
+		//Polaris and newer will crash with ERROR_DEVICE_LOST
+		//Older GCN will work okay most of the time but also occasionally draws garbage without reason (proprietary driver only)
+		if (gpu_name.find("Radeon") != std::string::npos ||  //Proprietary driver
+			gpu_name.find("POLARIS") != std::string::npos || //RADV POLARIS
+			gpu_name.find("VEGA") != std::string::npos)      //RADV VEGA
 		{
-			if (gpu_name.find(test) != std::string::npos)
-			{
-				g_drv_no_primitive_restart_flag = !g_cfg.video.vk.force_primitive_restart;
-				gcn4_proprietary = true;
-				break;
-			}
+			g_drv_no_primitive_restart_flag = !g_cfg.video.vk.force_primitive_restart;
 		}
 
-		//Older cards back to GCN1 break primitive restart on 16-bit indices
-		if (!gcn4_proprietary && gpu_name.find("Radeon") != std::string::npos)
+		//Radeon proprietary driver does not properly handle fence reset and can segfault during vkResetFences
+		//Disable fence reset for proprietary driver and delete+initialize a new fence instead
+		if (gpu_name.find("Radeon") != std::string::npos)
 		{
-			//gcn1 - gcn3 workarounds
-			g_drv_force_32bit_indices = true;
+			g_driver_vendor = driver_vendor::AMD;
 			g_drv_disable_fence_reset = true;
 		}
 
 		//Nvidia cards are easily susceptible to NaN poisoning
 		if (gpu_name.find("NVIDIA") != std::string::npos || gpu_name.find("GeForce") != std::string::npos)
 		{
+			g_driver_vendor = driver_vendor::NVIDIA;
 			g_drv_sanitize_fp_values = true;
+		}
+
+		if (g_driver_vendor == driver_vendor::unknown)
+		{
+			if (gpu_name.find("RADV") != std::string::npos)
+			{
+				g_driver_vendor = driver_vendor::RADV;
+			}
+			else
+			{
+				LOG_WARNING(RSX, "Unknown driver vendor for device '%s'", gpu_name);
+			}
 		}
 	}
 
-	bool emulate_primitive_restart()
+	driver_vendor get_driver_vendor()
 	{
-		return g_drv_no_primitive_restart_flag;
+		return g_driver_vendor;
 	}
 
-	bool force_32bit_index_buffer()
+	bool emulate_primitive_restart(rsx::primitive_type type)
 	{
-		return g_drv_force_32bit_indices;
+		if (g_drv_no_primitive_restart_flag)
+		{
+			switch (type)
+			{
+			case rsx::primitive_type::triangle_strip:
+			case rsx::primitive_type::quad_strip:
+				return true;
+			default:
+				break;
+			}
+		}
+
+		return false;
 	}
 
 	bool sanitize_fp_values()
@@ -365,6 +345,21 @@ namespace vk
 	bool fence_reset_disabled()
 	{
 		return g_drv_disable_fence_reset;
+	}
+
+	void insert_buffer_memory_barrier(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize length, VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage, VkAccessFlags src_mask, VkAccessFlags dst_mask)
+	{
+		VkBufferMemoryBarrier barrier = {};
+		barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		barrier.buffer = buffer;
+		barrier.offset = offset;
+		barrier.size = length;
+		barrier.srcAccessMask = src_mask;
+		barrier.dstAccessMask = dst_mask;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+		vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 1, &barrier, 0, nullptr);
 	}
 
 	void change_image_layout(VkCommandBuffer cmd, VkImage image, VkImageLayout current_layout, VkImageLayout new_layout, VkImageSubresourceRange range)
@@ -449,18 +444,7 @@ namespace vk
 	{
 		if (image->current_layout == new_layout) return;
 
-		VkImageAspectFlags flags = VK_IMAGE_ASPECT_COLOR_BIT;
-		switch (image->info.format)
-		{
-		case VK_FORMAT_D16_UNORM:
-			flags = VK_IMAGE_ASPECT_DEPTH_BIT;
-			break;
-		case VK_FORMAT_D24_UNORM_S8_UINT:
-		case VK_FORMAT_D32_SFLOAT_S8_UINT:
-			flags = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-			break;
-		}
-
+		VkImageAspectFlags flags = get_aspect_flags(image->info.format);
 		change_image_layout(cmd, image->value, image->current_layout, new_layout, { flags, 0, 1, 0, 1 });
 		image->current_layout = new_layout;
 	}
@@ -546,15 +530,15 @@ namespace vk
 	{
 		if (g_drv_disable_fence_reset)
 		{
-			vkDestroyFence(g_current_renderer, *pFence, nullptr);
+			vkDestroyFence(*g_current_renderer, *pFence, nullptr);
 
 			VkFenceCreateInfo info = {};
 			info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-			CHECK_RESULT(vkCreateFence(g_current_renderer, &info, nullptr, pFence));
+			CHECK_RESULT(vkCreateFence(*g_current_renderer, &info, nullptr, pFence));
 		}
 		else
 		{
-			CHECK_RESULT(vkResetFences(g_current_renderer, 1, pFence));
+			CHECK_RESULT(vkResetFences(*g_current_renderer, 1, pFence));
 		}
 	}
 

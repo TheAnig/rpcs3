@@ -51,10 +51,8 @@ public:
 	u32 GetSize() const { return m_range_size; }
 	bool IsInMyRange(const u32 addr, const u32 size);
 
-	// maps real address to virtual address space, returns the mapped address or 0 on failure (if no address is specified the
-	// first mappable space is used)
+	// maps real address to virtual address space
 	bool Map(u32 realaddr, u32 size, u32 addr);
-	u32 Map(u32 realaddr, u32 size);
 
 	// Unmap real address (please specify only starting point, no midway memory will be unmapped), returns the size of the unmapped area
 	bool UnmapRealAddress(u32 realaddr, u32& size);
@@ -62,14 +60,20 @@ public:
 	// Unmap address (please specify only starting point, no midway memory will be unmapped), returns the size of the unmapped area
 	bool UnmapAddress(u32 addr, u32& size);
 
-	// Reserve a certain amount so no one can use it, returns true on succces, false on failure
+	// Reserve a certain amount so no one can use it, returns true on success, false on failure
 	bool Reserve(u32 size);
 
-	// Unreserve a certain amount of bytes, returns true on succcess, false if size is bigger than the reserved amount
+	// Unreserve a certain amount of bytes, returns true on success, false if size is bigger than the reserved amount
 	bool Unreserve(u32 size);
 
 	// Return the total amount of reserved memory
 	u32 GetReservedAmount();
+
+	// Return the start of the mapped space
+	u32 GetRangeStart();
+
+	// Return the end of the mapped space
+	u32 GetRangeEnd();
 
 	bool Read32(const u32 addr, u32* value);
 
@@ -92,6 +96,6 @@ public:
 		return realAddr;
 	}
 
-	// return the mapped address given a real address, if not mapped return 0
-	u32 getMappedAddress(u32 realAddress);
+	// return the mapped address given a real address, if not mapped return minus one
+	s32 getMappedAddress(u32 realAddress);
 };

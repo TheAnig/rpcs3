@@ -71,11 +71,11 @@ public:
 	explicit main_window(std::shared_ptr<gui_settings> guiSettings, std::shared_ptr<emu_settings> emuSettings, QWidget *parent = 0);
 	void Init();
 	~main_window();
-	void CreateThumbnailToolbar();
 	QIcon GetAppIcon();
 
 Q_SIGNALS:
 	void RequestGlobalStylesheetChange(const QString& sheetFilePath);
+	void RequestTrophyManagerRepaint();
 
 public Q_SLOTS:
 	void OnEmuStop();
@@ -87,14 +87,17 @@ public Q_SLOTS:
 	void RepaintGui();
 
 private Q_SLOTS:
+	void OnPlayOrPause();
 	void Boot(const std::string& path, bool direct = false, bool add_only = false);
 	void BootElf();
 	void BootGame();
+	void BootRsxCapture();
 	void DecryptSPRXLibraries();
 
 	void SaveWindowState();
 	void ConfigureGuiFromSettings(bool configure_all = false);
 	void SetIconSizeActions(int idx);
+	void ResizeIcons(int index);
 
 protected:
 	void closeEvent(QCloseEvent *event) override;
@@ -106,7 +109,6 @@ protected:
 	void dragLeaveEvent(QDragLeaveEvent* event) override;
 	void SetAppIconFromPath(const std::string& path);
 private:
-	void RepaintToolbar();
 	void RepaintToolBarIcons();
 	void RepaintThumbnailIcons();
 	void CreateActions();

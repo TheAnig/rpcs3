@@ -2,7 +2,7 @@
 
 #include "stdafx.h"
 #include "GLHelpers.h"
-#include "../overlays.h"
+#include "../Overlays/overlays.h"
 
 extern u64 get_system_time();
 
@@ -327,8 +327,10 @@ namespace gl
 	{
 		u32 num_elements = 0;
 		std::vector<std::unique_ptr<gl::texture>> resources;
-		std::unordered_map<u64, std::unique_ptr<gl::texture>> temp_image_cache;
+		std::unordered_map<u64, std::pair<u32, std::unique_ptr<gl::texture>>> temp_image_cache;
+		std::unordered_map<u64, std::unique_ptr<gl::texture_view>> temp_view_cache;
 		std::unordered_map<u64, std::unique_ptr<gl::texture>> font_cache;
+		std::unordered_map<u64, std::unique_ptr<gl::texture_view>> view_cache;
 		bool is_font_draw = false;
 
 		ui_overlay_renderer()
@@ -390,31 +392,28 @@ namespace gl
 			};
 		}
 
-		gl::texture* load_simple_image(rsx::overlays::image_info* desc, bool temp_resource)
+		gl::texture_view* load_simple_image(rsx::overlays::image_info* desc, bool temp_resource, u32 owner_uid)
 		{
-			auto tex = std::make_unique<gl::texture>(gl::texture::target::texture2D);
-			tex->create();
-			tex->config()
-				.size({ desc->w, desc->h })
-				.format(gl::texture::format::rgba)
-				.type(gl::texture::type::uint_8_8_8_8)
-				.wrap(gl::texture::wrap::clamp_to_border, gl::texture::wrap::clamp_to_border, gl::texture::wrap::clamp_to_border)
-				.swizzle(gl::texture::channel::a, gl::texture::channel::b, gl::texture::channel::g, gl::texture::channel::r)
-				.filter(gl::min_filter::linear, gl::filter::linear)
-				.apply();
+			auto tex = std::make_unique<gl::texture>(GL_TEXTURE_2D, desc->w, desc->h, 1, 1, GL_RGBA8);
 			tex->copy_from(desc->data, gl::texture::format::rgba, gl::texture::type::uint_8_8_8_8);
 
+			GLenum remap[] = { GL_RED, GL_ALPHA, GL_BLUE, GL_GREEN };
+			auto view = std::make_unique<gl::texture_view>(tex.get(), remap);
+
+			auto result = view.get();
 			if (!temp_resource)
 			{
 				resources.push_back(std::move(tex));
+				view_cache[view_cache.size()] = std::move(view);
 			}
 			else
 			{
 				u64 key = (u64)desc;
-				temp_image_cache[key] = std::move(tex);
+				temp_image_cache[key] = std::move(std::make_pair(owner_uid, std::move(tex)));
+				temp_view_cache[key] = std::move(view);
 			}
 
-			return resources.back().get();
+			return result;
 		}
 
 		void create()
@@ -426,7 +425,7 @@ namespace gl
 
 			for (const auto &res : configuration.texture_raw_data)
 			{
-				load_simple_image(res.get(), false);
+				load_simple_image(res.get(), false, UINT32_MAX);
 			}
 
 			configuration.free_resources();
@@ -440,49 +439,56 @@ namespace gl
 			overlay_pass::destroy();
 		}
 
-		void remove_temp_resources()
+		void remove_temp_resources(u64 key)
 		{
-			temp_image_cache.clear();
+			std::vector<u64> keys_to_remove;
+			for (auto It = temp_image_cache.begin(); It != temp_image_cache.end(); ++It)
+			{
+				if (It->second.first == key)
+				{
+					keys_to_remove.push_back(It->first);
+				}
+			}
+
+			for (const auto& _key : keys_to_remove)
+			{
+				temp_image_cache.erase(_key);
+				temp_view_cache.erase(_key);
+			}
 		}
 
-		gl::texture* find_font(rsx::overlays::font *font)
+		gl::texture_view* find_font(rsx::overlays::font *font)
 		{
 			u64 key = (u64)font;
-			auto found = font_cache.find(key);
-			if (found != font_cache.end())
+			auto found = view_cache.find(key);
+			if (found != view_cache.end())
 				return found->second.get();
 
 			//Create font file
-			auto tex = std::make_unique<gl::texture>(gl::texture::target::texture2D);
-			tex->create();
-			tex->config()
-				.size({ (int)font->width, (int)font->height })
-				.format(gl::texture::format::r)
-				.type(gl::texture::type::ubyte)
-				.internal_format(gl::texture::internal_format::r8)
-				.wrap(gl::texture::wrap::clamp_to_border, gl::texture::wrap::clamp_to_border, gl::texture::wrap::clamp_to_border)
-				.swizzle(gl::texture::channel::r, gl::texture::channel::r, gl::texture::channel::r, gl::texture::channel::r)
-				.filter(gl::min_filter::linear, gl::filter::linear)
-				.apply();
+			auto tex = std::make_unique<gl::texture>(GL_TEXTURE_2D, (int)font->width, (int)font->height, 1, 1, GL_R8);
 			tex->copy_from(font->glyph_data.data(), gl::texture::format::r, gl::texture::type::ubyte);
 
-			auto result = tex.get();
+			GLenum remap[] = { GL_RED, GL_RED, GL_RED, GL_RED };
+			auto view = std::make_unique<gl::texture_view>(tex.get(), remap);
+
+			auto result = view.get();
 			font_cache[key] = std::move(tex);
+			view_cache[key] = std::move(view);
 
 			return result;
 		}
 
-		gl::texture* find_temp_image(rsx::overlays::image_info *desc)
+		gl::texture_view* find_temp_image(rsx::overlays::image_info *desc, u32 owner_uid)
 		{
 			auto key = (u64)desc;
-			auto cached = temp_image_cache.find(key);
-			if (cached != temp_image_cache.end())
+			auto cached = temp_view_cache.find(key);
+			if (cached != temp_view_cache.end())
 			{
 				return cached->second.get();
 			}
 			else
 			{
-				return load_simple_image(desc, true);
+				return load_simple_image(desc, true, owner_uid);
 			}
 		}
 
@@ -517,19 +523,19 @@ namespace gl
 			}
 		}
 
-		void run(u16 w, u16 h, GLuint target, rsx::overlays::user_interface& ui)
+		void run(u16 w, u16 h, GLuint target, rsx::overlays::overlay& ui)
 		{
 			program_handle.uniforms["ui_scale"] = color4f((f32)ui.virtual_width, (f32)ui.virtual_height, 1.f, 1.f);
 			program_handle.uniforms["time"] = (f32)(get_system_time() / 1000) * 0.005f;
 			for (auto &cmd : ui.get_compiled().draw_commands)
 			{
-				upload_vertex_data((f32*)cmd.second.data(), (u32)cmd.second.size() * 4u);
-				num_drawable_elements = (u32)cmd.second.size();
+				upload_vertex_data((f32*)cmd.verts.data(), (u32)cmd.verts.size() * 4u);
+				num_drawable_elements = (u32)cmd.verts.size();
 				is_font_draw = false;
 				GLint texture_exists = GL_TRUE;
 
 				glActiveTexture(GL_TEXTURE31);
-				switch (cmd.first.texture_ref)
+				switch (cmd.config.texture_ref)
 				{
 				case rsx::overlays::image_resource_id::game_icon:
 				case rsx::overlays::image_resource_id::backbuffer:
@@ -542,27 +548,27 @@ namespace gl
 				}
 				case rsx::overlays::image_resource_id::raw_image:
 				{
-					glBindTexture(GL_TEXTURE_2D, find_temp_image((rsx::overlays::image_info*)cmd.first.external_data_ref)->id());
+					glBindTexture(GL_TEXTURE_2D, find_temp_image((rsx::overlays::image_info*)cmd.config.external_data_ref, ui.uid)->id());
 					break;
 				}
 				case rsx::overlays::image_resource_id::font_file:
 				{
 					is_font_draw = true;
-					glBindTexture(GL_TEXTURE_2D, find_font(cmd.first.font_ref)->id());
+					glBindTexture(GL_TEXTURE_2D, find_font(cmd.config.font_ref)->id());
 					break;
 				}
 				default:
 				{
-					glBindTexture(GL_TEXTURE_2D, resources[cmd.first.texture_ref - 1]->id());
+					glBindTexture(GL_TEXTURE_2D, view_cache[cmd.config.texture_ref - 1]->id());
 					break;
 				}
 				}
 
-				program_handle.uniforms["color"] = cmd.first.color;
+				program_handle.uniforms["color"] = cmd.config.color;
 				program_handle.uniforms["read_texture"] = texture_exists;
-				program_handle.uniforms["pulse_glow"] = (s32)cmd.first.pulse_glow;
-				program_handle.uniforms["clip_region"] = (s32)cmd.first.clip_region;
-				program_handle.uniforms["clip_bounds"] = cmd.first.clip_rect;
+				program_handle.uniforms["pulse_glow"] = (s32)cmd.config.pulse_glow;
+				program_handle.uniforms["clip_region"] = (s32)cmd.config.clip_region;
+				program_handle.uniforms["clip_bounds"] = cmd.config.clip_rect;
 				overlay_pass::run(w, h, target, false, true);
 			}
 

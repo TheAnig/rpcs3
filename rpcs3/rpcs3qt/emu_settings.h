@@ -37,6 +37,13 @@ public:
 		PPUDebug,
 		SPUDebug,
 		MaxLLVMThreads,
+		EnableTSX,
+		AccurateGETLLAR,
+		AccuratePUTLLUC,
+		SetDAZandFTZ,
+		SPUBlockSize,
+		SPUCache,
+		SPUVerification,
 
 		// Graphics
 		Renderer,
@@ -60,11 +67,20 @@ public:
 		StrictRenderingMode,
 		DisableVertexCache,
 		DisableOcclusionQueries,
+		DisableFIFOReordering,
 		AnisotropicFilterOverride,
 		ResolutionScale,
 		MinimumScalableDimension,
 		ForceCPUBlitEmulation,
 		DisableOnDiskShaderCache,
+		DisableVulkanMemAllocator,
+
+		// Performance Overlay
+		PerfOverlayEnabled,
+		PerfOverlayDetailLevel,
+		PerfOverlayPosition,
+		PerfOverlayUpdateInterval,
+		PerfOverlayFontSize,
 
 		// Audio
 		AudioRenderer,
@@ -197,6 +213,13 @@ private:
 		{ PPUDebug,                 { "Core", "PPU Debug"}},
 		{ SPUDebug,                 { "Core", "SPU Debug"}},
 		{ MaxLLVMThreads,           { "Core", "Max LLVM Compile Threads"}},
+		{ EnableTSX,                { "Core", "Enable TSX"}},
+		{ AccurateGETLLAR,          { "Core", "Accurate GETLLAR"}},
+		{ AccuratePUTLLUC,          { "Core", "Accurate PUTLLUC"}},
+		{ SetDAZandFTZ,             { "Core", "Set DAZ and FTZ"}},
+		{ SPUBlockSize,             { "Core", "SPU Block Size"}},
+		{ SPUCache,                 { "Core", "SPU Cache"}},
+		{ SPUVerification,          { "Core", "SPU Verification"}},
 
 		// Graphics Tab
 		{ Renderer,                 { "Video", "Renderer"}},
@@ -218,13 +241,22 @@ private:
 		{ StrictRenderingMode,      { "Video", "Strict Rendering Mode"}},
 		{ DisableVertexCache,       { "Video", "Disable Vertex Cache"}},
 		{ DisableOcclusionQueries,  { "Video", "Disable ZCull Occlusion Queries" }},
+		{ DisableFIFOReordering,    { "Video", "Disable FIFO Reordering" }},
 		{ ForceCPUBlitEmulation,    { "Video", "Force CPU Blit" }},
 		{ DisableOnDiskShaderCache, { "Video", "Disable On-Disk Shader Cache"}},
+		{ DisableVulkanMemAllocator,{ "Video", "Disable Vulkan Memory Allocator" }},
 		{ AnisotropicFilterOverride,{ "Video", "Anisotropic Filter Override" }},
 		{ ResolutionScale,          { "Video", "Resolution Scale" }},
 		{ MinimumScalableDimension, { "Video", "Minimum Scalable Dimension" }},
 		{ D3D12Adapter,             { "Video", "D3D12", "Adapter"}},
 		{ VulkanAdapter,            { "Video", "Vulkan", "Adapter"}},
+
+		// Performance Overlay
+		{ PerfOverlayEnabled,       { "Video", "Performance Overlay", "Enabled" } },
+		{ PerfOverlayDetailLevel,   { "Video", "Performance Overlay", "Detail level" } },
+		{ PerfOverlayPosition,      { "Video", "Performance Overlay", "Position" } },
+		{ PerfOverlayUpdateInterval,{ "Video", "Performance Overlay", "Metrics update interval (ms)" } },
+		{ PerfOverlayFontSize,      { "Video", "Performance Overlay", "Font size (px)" } },
 
 		// Audio
 		{ AudioRenderer,  { "Audio", "Renderer"}},
@@ -267,6 +299,5 @@ private:
 
 	YAML::Node m_defaultSettings; // The default settings as a YAML node.
 	YAML::Node m_currentSettings; // The current settings as a YAML node.
-	fs::file m_config; //! File to read/write the config settings.
 	std::string m_path;
 };

@@ -294,7 +294,7 @@ const std::array<ppu_function_t, 1024> s_ppu_syscall_table
 	null_func,//BIND_FUNC(sys_spu_thread_group_set_cooperative_victims) //250 (0x0FA)
 	BIND_FUNC(sys_spu_thread_group_connect_event_all_threads), //251 (0x0FB)
 	BIND_FUNC(sys_spu_thread_group_disconnect_event_all_threads), //252 (0x0FC)
-	null_func,//BIND_FUNC()                                 //253 (0x0FD)
+	null_func,//BIND_FUNC(sys_spu_thread_group...)          //253 (0x0FD)
 	null_func,//BIND_FUNC(sys_spu_thread_group_log)         //254 (0x0FE)
 
 	uns_func, uns_func, uns_func, uns_func, uns_func,       //255-259  UNS
@@ -548,7 +548,7 @@ const std::array<ppu_function_t, 1024> s_ppu_syscall_table
 	uns_func,                                               //576 (0x240)  UNS
 	null_func,//BIND_FUNC(sys_pad_manager_...)              //577 (0x241)  ROOT  PM
 	null_func,//BIND_FUNC(sys_bluetooth_...)                //578 (0x242)
-	null_func,//BIND_FUNC(sys_bluetooth_...)                //579 (0x243)
+	null_func,//BIND_FUNC(sys_bluetooth_aud_serial_...)    //579 (0x243)
 	null_func,//BIND_FUNC(sys_bluetooth_...)                //580 (0x244)  ROOT
 	null_func,//BIND_FUNC(sys_bluetooth_...)                //581 (0x245)  ROOT
 	null_func,//BIND_FUNC(sys_bluetooth_...)                //582 (0x246)  ROOT
@@ -790,8 +790,8 @@ const std::array<ppu_function_t, 1024> s_ppu_syscall_table
 	null_func,//BIND_FUNC(sys_dbg_continue_processes)       //901 (0x385)
 	null_func,//BIND_FUNC(sys_dbg_stop_threads)             //902 (0x386)
 	null_func,//BIND_FUNC(sys_dbg_continue_threads)         //903 (0x387)
-	null_func,//BIND_FUNC(sys_dbg_read_process_memory)      //904 (0x388)
-	null_func,//BIND_FUNC(sys_dbg_write_process_memory)     //905 (0x389)
+	BIND_FUNC(sys_dbg_read_process_memory),					//904 (0x388)
+	BIND_FUNC(sys_dbg_write_process_memory),				//905 (0x389)
 	null_func,//BIND_FUNC(sys_dbg_read_thread_register)     //906 (0x38A)
 	null_func,//BIND_FUNC(sys_dbg_write_thread_register)    //907 (0x38B)
 	null_func,//BIND_FUNC(sys_dbg_get_process_list)         //908 (0x38C)
@@ -843,7 +843,7 @@ const std::array<ppu_function_t, 1024> s_ppu_syscall_table
 	null_func,//BIND_FUNC(sys_dbg_vm_get_info)              //954 (0x3BA)
 	null_func,//BIND_FUNC(sys_dbg_enable_floating_point_enabled_exception) //955 (0x3BB)
 	null_func,//BIND_FUNC(sys_dbg_disable_floating_point_enabled_exception) //956 (0x3BC)
-	null_func,//BIND_FUNC(sys_dbg_...)                      //957 (0x3BD)  DBG
+	null_func,//BIND_FUNC(sys_dbg_get_process_memory_container_information) //957 (0x3BD)
 	uns_func,                                               //958 (0x3BE)  UNS
 	null_func,//BIND_FUNC(sys_dbg_...)                      //959 (0x3BF)
 	null_func,//BIND_FUNC(sys_dbg_perfomance_monitor)       //960 (0x3C0)
@@ -862,15 +862,15 @@ const std::array<ppu_function_t, 1024> s_ppu_syscall_table
 	uns_func,//BIND_FUNC(sys_dbg_...)                       //973 (0x3CD)
 	null_func,//BIND_FUNC(sys_dbg_...)                      //974 (0x3CE)
 	null_func,//BIND_FUNC(sys_dbg_read_spu_thread_context2) //975 (0x3CF)
-	null_func,//BIND_FUNC(sys_dbg_...)                      //976 (0x3D0)
-	null_func,//BIND_FUNC(sys_dbg_...)                      //977 (0x3D1)
-	null_func,//BIND_FUNC(sys_dbg_...)                      //978 (0x3D2)  ROOT
-	null_func,//BIND_FUNC(sys_dbg_...)                      //979 (0x3D3)
-	null_func,//BIND_FUNC(sys_dbg_...)                      //980 (0x3D4)
-	null_func,//BIND_FUNC(sys_dbg_...)                      //981 (0x3D5)  ROOT
-	null_func,//BIND_FUNC(sys_dbg_...)                      //982 (0x3D6)
-	null_func,//BIND_FUNC(sys_dbg_...)                      //983 (0x3D7)
-	null_func,//BIND_FUNC(sys_dbg_...)                      //984 (0x3D8)
+	null_func,//BIND_FUNC(sys_crypto_engine_create)         //976 (0x3D0)
+	null_func,//BIND_FUNC(sys_crypto_engine_destroy)        //977 (0x3D1)
+	null_func,//BIND_FUNC(sys_crypto_engine_hasher_prepare) //978 (0x3D2)  ROOT
+	null_func,//BIND_FUNC(sys_crypto_engine_hasher_run)     //979 (0x3D3)
+	null_func,//BIND_FUNC(sys_crypto_engine_hasher_get_hash) //980 (0x3D4)
+	null_func,//BIND_FUNC(sys_crypto_engine_cipher_prepare) //981 (0x3D5)  ROOT
+	null_func,//BIND_FUNC(sys_crypto_engine_cipher_run)     //982 (0x3D6)
+	null_func,//BIND_FUNC(sys_crypto_engine_cipher_get_hash) //983 (0x3D7)
+	null_func,//BIND_FUNC(sys_crypto_engine_random_generate) //984 (0x3D8)
 	null_func,//BIND_FUNC(sys_dbg_get_console_type)         //985 (0x3D9)  ROOT
 	null_func,//BIND_FUNC(sys_dbg_...)                      //986 (0x3DA)  ROOT  DBG
 	null_func,//BIND_FUNC(sys_dbg_...)                      //987 (0x3DB)  ROOT

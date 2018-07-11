@@ -1,3 +1,33 @@
+#include "JIT.h"
+
+asmjit::JitRuntime& asmjit::get_global_runtime()
+{
+	// Magic static
+	static asmjit::JitRuntime g_rt;
+	return g_rt;
+}
+
+asmjit::Label asmjit::build_transaction_enter(asmjit::X86Assembler& c, asmjit::Label fallback)
+{
+	Label fall = c.newLabel();
+	Label begin = c.newLabel();
+	c.jmp(begin);
+	c.bind(fall);
+	c.test(x86::eax, _XABORT_RETRY);
+	c.jz(fallback);
+	c.align(kAlignCode, 16);
+	c.bind(begin);
+	c.xbegin(fall);
+	return begin;
+}
+
+void asmjit::build_transaction_abort(asmjit::X86Assembler& c, unsigned char code)
+{
+	c.db(0xc6);
+	c.db(0xf8);
+	c.db(code);
+}
+
 #ifdef LLVM_AVAILABLE
 
 #include <unordered_map>
@@ -33,8 +63,6 @@
 #else
 #include <sys/mman.h>
 #endif
-
-#include "JIT.h"
 
 // Memory manager mutex
 shared_mutex s_mutex;
@@ -72,7 +100,7 @@ static void* s_next = s_memory;
 static std::deque<std::vector<RUNTIME_FUNCTION>> s_unwater;
 static std::vector<std::vector<RUNTIME_FUNCTION>> s_unwind; // .pdata
 #else
-static std::deque<std::tuple<u8*, u64, std::size_t>> s_unfire;
+static std::deque<std::pair<u8*, std::size_t>> s_unfire;
 #endif
 
 // Reset memory manager
@@ -89,27 +117,9 @@ extern void jit_finalize()
 
 	s_unwind.clear();
 #else
-	struct MemoryManager : llvm::RTDyldMemoryManager
-	{
-		u8* allocateCodeSection(std::uintptr_t size, uint align, uint sec_id, llvm::StringRef sec_name) override
-		{
-			return nullptr;
-		}
-
-		u8* allocateDataSection(std::uintptr_t size, uint align, uint sec_id, llvm::StringRef sec_name, bool is_ro) override
-		{
-			return nullptr;
-		}
-
-		bool finalizeMemory(std::string* = nullptr) override
-		{
-			return false;
-		}
-	} mem;
-
 	for (auto&& t : s_unfire)
 	{
-		mem.deregisterEHFrames(std::get<0>(t), std::get<1>(t), std::get<2>(t));
+		llvm::RTDyldMemoryManager::deregisterEHFramesInProcess(t.first, t.second);
 	}
 
 	s_unfire.clear();
@@ -287,14 +297,91 @@ struct MemoryManager : llvm::RTDyldMemoryManager
 			s_unwind.emplace_back(std::move(pdata));
 		}
 #else
-		s_unfire.push_front(std::make_tuple(addr, load_addr, size));
+		s_unfire.push_front(std::make_pair(addr, size));
 #endif
 
 		return RTDyldMemoryManager::registerEHFrames(addr, load_addr, size);
 	}
 
-	void deregisterEHFrames(u8* addr, u64 load_addr, std::size_t size) override
+	void deregisterEHFrames() override
 	{
+	}
+};
+
+// Simple memory manager
+struct MemoryManager2 : llvm::RTDyldMemoryManager
+{
+	// Reserve 2 GiB
+	void* const m_memory = utils::memory_reserve(0x80000000);
+
+	u8* const m_code = static_cast<u8*>(m_memory) + 0x00000000;
+	u8* const m_data = static_cast<u8*>(m_memory) + 0x40000000;
+
+	u64 m_code_pos = 0;
+	u64 m_data_pos = 0;
+
+	MemoryManager2() = default;
+
+	~MemoryManager2() override
+	{
+		utils::memory_release(m_memory, 0x80000000);
+	}
+
+	u8* allocateCodeSection(std::uintptr_t size, uint align, uint sec_id, llvm::StringRef sec_name) override
+	{
+		// Simple allocation
+		const u64 old = m_code_pos;
+		const u64 pos = ::align(m_code_pos, align);
+		m_code_pos = ::align(pos + size, align);
+
+		if (m_code_pos > 0x40000000)
+		{
+			LOG_FATAL(GENERAL, "LLVM: Out of code memory (size=0x%x, align=0x%x)", size, align);
+			return nullptr;
+		}
+
+		const u64 olda = ::align(old, 0x10000);
+		const u64 newa = ::align(m_code_pos, 0x10000);
+
+		if (olda != newa)
+		{
+			// Commit more memory
+			utils::memory_commit(m_code + olda, newa - olda, utils::protection::wx);
+		}
+
+		LOG_NOTICE(GENERAL, "LLVM: Code section %u '%s' allocated -> %p (size=0x%x, align=0x%x)", sec_id, sec_name.data(), m_code + pos, size, align);
+		return m_code + pos;
+	}
+
+	u8* allocateDataSection(std::uintptr_t size, uint align, uint sec_id, llvm::StringRef sec_name, bool is_ro) override
+	{
+		// Simple allocation
+		const u64 old = m_data_pos;
+		const u64 pos = ::align(m_data_pos, align);
+		m_data_pos = ::align(pos + size, align);
+
+		if (m_data_pos > 0x40000000)
+		{
+			LOG_FATAL(GENERAL, "LLVM: Out of data memory (size=0x%x, align=0x%x)", size, align);
+			return nullptr;
+		}
+
+		const u64 olda = ::align(old, 0x10000);
+		const u64 newa = ::align(m_data_pos, 0x10000);
+
+		if (olda != newa)
+		{
+			// Commit more memory
+			utils::memory_commit(m_data + olda, newa - olda);
+		}
+
+		LOG_NOTICE(GENERAL, "LLVM: Data section %u '%s' allocated -> %p (size=0x%x, align=0x%x, %s)", sec_id, sec_name.data(), m_data + pos, size, align, is_ro ? "ro" : "rw");
+		return m_data + pos;
+	}
+
+	bool finalizeMemory(std::string* = nullptr) override
+	{
+		return false;
 	}
 };
 
@@ -373,15 +460,15 @@ public:
 		std::string name = m_path;
 		name.append(module->getName());
 		fs::file(name, fs::rewrite).write(obj.getBufferStart(), obj.getBufferSize());
-		LOG_SUCCESS(GENERAL, "LLVM: Created module: %s", module->getName().data());
+		LOG_NOTICE(GENERAL, "LLVM: Created module: %s", module->getName().data());
 	}
 
 	static std::unique_ptr<llvm::MemoryBuffer> load(const std::string& path)
 	{
 		if (fs::file cached{path, fs::read})
 		{
-			auto buf = llvm::MemoryBuffer::getNewUninitMemBuffer(cached.size());
-			cached.read(const_cast<char*>(buf->getBufferStart()), buf->getBufferSize());
+			auto buf = llvm::WritableMemoryBuffer::getNewUninitMemBuffer(cached.size());
+			cached.read(buf->getBufferStart(), buf->getBufferSize());
 			return buf;
 		}
 
@@ -395,7 +482,7 @@ public:
 
 		if (auto buf = load(path))
 		{
-			LOG_SUCCESS(GENERAL, "LLVM: Loaded module: %s", module->getName().data());
+			LOG_NOTICE(GENERAL, "LLVM: Loaded module: %s", module->getName().data());
 			return buf;
 		}
 
@@ -417,11 +504,24 @@ std::string jit_compiler::cpu(const std::string& _cpu)
 			m_cpu == "broadwell" ||
 			m_cpu == "skylake" ||
 			m_cpu == "skylake-avx512" ||
-			m_cpu == "cannonlake")
+			m_cpu == "cannonlake" ||
+			m_cpu == "icelake")
 		{
+			// Downgrade if AVX is not supported by some chips
 			if (!utils::has_avx())
 			{
 				m_cpu = "nehalem";
+			}
+		}
+
+		if (m_cpu == "skylake-avx512" ||
+			m_cpu == "cannonlake" ||
+			m_cpu == "icelake")
+		{
+			// Downgrade if AVX-512 is disabled or not supported
+			if (!utils::has_512())
+			{
+				m_cpu = "skylake";
 			}
 		}
 	}
@@ -429,7 +529,7 @@ std::string jit_compiler::cpu(const std::string& _cpu)
 	return m_cpu;
 }
 
-jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, const std::string& _cpu)
+jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, const std::string& _cpu, bool large)
 	: m_link(_link)
 	, m_cpu(cpu(_cpu))
 {
@@ -440,8 +540,10 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 		// Auxiliary JIT (does not use custom memory manager, only writes the objects)
 		m_engine.reset(llvm::EngineBuilder(std::make_unique<llvm::Module>("null_", m_context))
 			.setErrorStr(&result)
+			.setEngineKind(llvm::EngineKind::JIT)
+			.setMCJITMemoryManager(std::make_unique<MemoryManager2>())
 			.setOptLevel(llvm::CodeGenOpt::Aggressive)
-			.setCodeModel(llvm::CodeModel::Small)
+			.setCodeModel(large ? llvm::CodeModel::Large : llvm::CodeModel::Small)
 			.setMCPU(m_cpu)
 			.create());
 	}
@@ -453,9 +555,10 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 
 		m_engine.reset(llvm::EngineBuilder(std::make_unique<llvm::Module>("null", m_context))
 			.setErrorStr(&result)
+			.setEngineKind(llvm::EngineKind::JIT)
 			.setMCJITMemoryManager(std::move(mem))
 			.setOptLevel(llvm::CodeGenOpt::Aggressive)
-			.setCodeModel(llvm::CodeModel::Small)
+			.setCodeModel(large ? llvm::CodeModel::Large : llvm::CodeModel::Small)
 			.setMCPU(m_cpu)
 			.create());
 
@@ -475,6 +578,25 @@ jit_compiler::~jit_compiler()
 {
 }
 
+bool jit_compiler::has_ssse3() const
+{
+	if (m_cpu == "generic" ||
+		m_cpu == "k8" ||
+		m_cpu == "opteron" ||
+		m_cpu == "athlon64" ||
+		m_cpu == "athlon-fx" ||
+		m_cpu == "k8-sse3" ||
+		m_cpu == "opteron-sse3" ||
+		m_cpu == "athlon64-sse3" ||
+		m_cpu == "amdfam10" ||
+		m_cpu == "barcelona")
+	{
+		return false;
+	}
+
+	return true;
+}
+
 void jit_compiler::add(std::unique_ptr<llvm::Module> module, const std::string& path)
 {
 	ObjectCache cache{path};
@@ -484,6 +606,19 @@ void jit_compiler::add(std::unique_ptr<llvm::Module> module, const std::string& 
 	m_engine->addModule(std::move(module));
 	m_engine->generateCodeForModule(ptr);
 	m_engine->setObjectCache(nullptr);
+
+	for (auto& func : ptr->functions())
+	{
+		// Delete IR to lower memory consumption
+		func.deleteBody();
+	}
+}
+
+void jit_compiler::add(std::unique_ptr<llvm::Module> module)
+{
+	const auto ptr = module.get();
+	m_engine->addModule(std::move(module));
+	m_engine->generateCodeForModule(ptr);
 
 	for (auto& func : ptr->functions())
 	{

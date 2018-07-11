@@ -160,15 +160,17 @@ namespace sound
 }
 
 /* Having the icons associated with the game info simplifies logic internally */
-struct GUI_GameInfo
+struct gui_game_info
 {
 	GameInfo info;
 	compat_status compat;
 	QImage icon;
 	QPixmap pxmap;
-	bool bootable;
 	bool hasCustomConfig;
 };
+
+typedef std::shared_ptr<gui_game_info> game_info;
+Q_DECLARE_METATYPE(game_info)
 
 class game_list_frame : public custom_dock_widget
 {
@@ -177,6 +179,12 @@ class game_list_frame : public custom_dock_widget
 public:
 	explicit game_list_frame(std::shared_ptr<gui_settings> guiSettings, std::shared_ptr<emu_settings> emuSettings, QWidget *parent = nullptr);
 	~game_list_frame();
+
+	/** Fix columns with width smaller than the minimal section size */
+	void FixNarrowColumns();
+
+	/** Resizes the columns to their contents and adds a small spacing */
+	void ResizeColumnsToContents(int spacing = 20);
 
 	/** Refresh the gamelist with/without loading game data from files. Public so that main frame can refresh after vfs or install */
 	void Refresh(const bool fromDrive = false, const bool scrollAfter = true);
@@ -206,10 +214,10 @@ private Q_SLOTS:
 	bool RemoveCustomConfiguration(const std::string& base_dir, bool is_interactive = false);
 	bool DeleteShadersCache(const std::string& base_dir, bool is_interactive = false);
 	bool DeleteLLVMCache(const std::string& base_dir, bool is_interactive = false);
+	bool DeleteSPUCache(const std::string& base_dir, bool is_interactive = false);
 	void OnColClicked(int col);
 	void ShowContextMenu(const QPoint &pos);
-	void ShowSpecifiedContextMenu(const QPoint &pos, int index); // Different name because the notation for overloaded connects is messy
-	void doubleClickedSlot(const QModelIndex& index);
+	void doubleClickedSlot(QTableWidgetItem *item);
 Q_SIGNALS:
 	void GameListFrameClosed();
 	void RequestBoot(const std::string& path);
@@ -220,9 +228,10 @@ protected:
 	void resizeEvent(QResizeEvent *event) override;
 	bool eventFilter(QObject *object, QEvent *event) override;
 private:
-	QPixmap PaintedPixmap(const QImage& img, bool paintConfigIcon = false);
+	QPixmap PaintedPixmap(const QImage& img, bool paint_config_icon = false);
+	void ShowCustomConfigIcon(QTableWidgetItem* item, bool enabled);
 	void PopulateGameGrid(int maxCols, const QSize& image_size, const QColor& image_color);
-	bool IsEntryVisible(const GUI_GameInfo& game);
+	bool IsEntryVisible(const game_info& game);
 	void SortGameList();
 
 	int PopulateGameList();
@@ -230,6 +239,8 @@ private:
 
 	std::string CurrentSelectionIconPath();
 	std::string GetStringFromU32(const u32& key, const std::map<u32, QString>& map, bool combined = false);
+
+	game_info GetGameInfoFromItem(QTableWidgetItem* item);
 
 	// Which widget we are displaying depends on if we are in grid or list mode.
 	QMainWindow* m_Game_Dock;
@@ -244,6 +255,7 @@ private:
 	QList<QAction*> m_columnActs;
 	Qt::SortOrder m_colSortOrder;
 	int m_sortColumn;
+	QMap<QString, QString> m_notes;
 
 	// Categories
 	QStringList m_categoryFilters;
@@ -253,9 +265,9 @@ private:
 	bool m_oldLayoutIsList = true;
 
 	// Data
-	std::shared_ptr<gui_settings> xgui_settings;
-	std::shared_ptr<emu_settings> xemu_settings;
-	std::vector<GUI_GameInfo> m_game_data;
+	std::shared_ptr<gui_settings> m_gui_settings;
+	std::shared_ptr<emu_settings> m_emu_settings;
+	QList<game_info> m_game_data;
 	QSet<QString> m_hidden_list;
 	bool m_show_hidden{false};
 

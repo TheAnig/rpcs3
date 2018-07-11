@@ -6,6 +6,7 @@
 
 #include "Utilities/GSL.h"
 #include "Utilities/hash.h"
+#include <mutex>
 
 enum class SHADER_TYPE
 {
@@ -26,7 +27,15 @@ namespace program_hash_util
 
 	struct vertex_program_utils
 	{
+		struct vertex_program_metadata
+		{
+			std::bitset<512> instruction_mask;
+			u32 ucode_length;
+		};
+
 		static size_t get_vertex_program_ucode_hash(const RSXVertexProgram &program);
+
+		static vertex_program_metadata analyse_vertex_program(const u32* data, u32 entry, RSXVertexProgram& dst_prog);
 	};
 
 	struct vertex_program_storage_hash
@@ -41,6 +50,13 @@ namespace program_hash_util
 
 	struct fragment_program_utils
 	{
+		struct fragment_program_metadata
+		{
+			u32 program_start_offset;
+			u32 program_ucode_length;
+			u16 referenced_textures_mask;
+		};
+
 		/**
 		* returns true if the given source Operand is a constant
 		*/
@@ -48,7 +64,7 @@ namespace program_hash_util
 
 		static size_t get_fragment_program_ucode_size(void *ptr);
 
-		static u32 get_fragment_program_start(void *ptr);
+		static fragment_program_metadata analyse_fragment_program(void *ptr);
 
 		static size_t get_fragment_program_ucode_hash(const RSXFragmentProgram &program);
 	};
@@ -120,6 +136,7 @@ class program_state_cache
 	};
 
 protected:
+	std::mutex s_mtx; // TODO: Only need to synchronize when loading cache
 	size_t m_next_id = 0;
 	bool m_cache_miss_flag;
 	binary_to_vertex_program m_vertex_shader_cache;
@@ -291,11 +308,13 @@ public:
 		LOG_NOTICE(RSX, "*** vp id = %d", vertex_program.id);
 		LOG_NOTICE(RSX, "*** fp id = %d", fragment_program.id);
 
-		m_storage[key] = backend_traits::build_pipeline(vertex_program, fragment_program, pipelineProperties, std::forward<Args>(args)...);
+		pipeline_storage_type pipeline = backend_traits::build_pipeline(vertex_program, fragment_program, pipelineProperties, std::forward<Args>(args)...);
+		std::lock_guard<std::mutex> lock(s_mtx);
+		auto &rtn = m_storage[key] = std::move(pipeline);
 		m_cache_miss_flag = true;
 
 		LOG_SUCCESS(RSX, "New program compiled successfully");
-		return m_storage[key];
+		return rtn;
 	}
 
 	size_t get_fragment_constants_buffer_size(const RSXFragmentProgram &fragmentShader) const
