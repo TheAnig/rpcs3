@@ -371,12 +371,18 @@ namespace rsx
 
 		void set_transform_program_start(thread* rsx, u32, u32)
 		{
-			rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_dirty;
+			if (method_registers.register_change_flag)
+			{
+				rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_dirty;
+			}
 		}
 
 		void set_vertex_attribute_output_mask(thread* rsx, u32, u32)
 		{
-			rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_dirty | rsx::pipeline_state::fragment_program_dirty;
+			if (method_registers.register_change_flag)
+			{
+				rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_dirty | rsx::pipeline_state::fragment_program_dirty;
+			}
 		}
 
 		void set_begin_end(thread* rsxthr, u32 _reg, u32 arg)
@@ -563,7 +569,11 @@ namespace rsx
 			static void impl(thread* rsx, u32 _reg, u32 arg)
 			{
 				rsx->m_textures_dirty[index] = true;
-				rsx->m_graphics_state |= rsx::pipeline_state::fragment_program_dirty;
+
+				if (rsx->current_fp_metadata.referenced_textures_mask & (1 << index))
+				{
+					rsx->m_graphics_state |= rsx::pipeline_state::fragment_program_dirty;
+				}
 			}
 		};
 
@@ -573,6 +583,11 @@ namespace rsx
 			static void impl(thread* rsx, u32 _reg, u32 arg)
 			{
 				rsx->m_vertex_textures_dirty[index] = true;
+
+				if (rsx->current_vp_metadata.referenced_textures_mask & (1 << index))
+				{
+					rsx->m_graphics_state |= rsx::pipeline_state::vertex_program_dirty;
+				}
 			}
 		};
 	}
@@ -1301,7 +1316,16 @@ namespace rsx
 
 	void rsx_state::decode(u32 reg, u32 value)
 	{
-		registers[reg] = value;
+		auto& old_value = registers[reg];
+		if (old_value != value)
+		{
+			register_change_flag = true;
+			old_value = value;
+		}
+		else
+		{
+			register_change_flag = false;
+		}
 	}
 
 	bool rsx_state::test(u32 reg, u32 value) const
