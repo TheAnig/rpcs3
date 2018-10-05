@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "Emu/Memory/Memory.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Crypto/unself.h"
@@ -17,7 +17,7 @@
 
 
 
-logs::channel sys_spu("sys_spu");
+LOG_CHANNEL(sys_spu);
 
 void sys_spu_image::load(const fs::file& stream)
 {
@@ -216,7 +216,7 @@ error_code sys_spu_thread_initialize(vm::ptr<u32> thread, u32 group_id, u32 spu_
 		return CELL_ESRCH;
 	}
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	if (spu_num >= group->threads.size())
 	{
@@ -242,7 +242,7 @@ error_code sys_spu_thread_initialize(vm::ptr<u32> thread, u32 group_id, u32 spu_
 	group->imgs[spu_num] = std::make_pair(*img, std::vector<sys_spu_segment>());
 	group->imgs[spu_num].second.assign(img->segs.get_ptr(), img->segs.get_ptr() + img->nsegs);
 
-	if (++group->init == group->num)
+	if (++group->init == group->max_num)
 	{
 		group->run_state = SPU_THREAD_GROUP_STATUS_INITIALIZED;
 	}
@@ -263,7 +263,7 @@ error_code sys_spu_thread_set_argument(u32 id, vm::ptr<sys_spu_thread_argument> 
 
 	const auto group = thread->group;
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	group->args[thread->index] = {arg->arg1, arg->arg2, arg->arg3, arg->arg4};
 
@@ -371,7 +371,7 @@ error_code sys_spu_thread_group_start(ppu_thread& ppu, u32 id)
 		return CELL_ESTAT;
 	}
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	group->join_state = 0;
 
@@ -426,7 +426,7 @@ error_code sys_spu_thread_group_suspend(u32 id)
 		return CELL_EINVAL;
 	}
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	if (group->run_state <= SPU_THREAD_GROUP_STATUS_INITIALIZED || group->run_state == SPU_THREAD_GROUP_STATUS_STOPPED)
 	{
@@ -479,7 +479,7 @@ error_code sys_spu_thread_group_resume(u32 id)
 		return CELL_EINVAL;
 	}
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	// SPU_THREAD_GROUP_STATUS_READY state is not used
 
@@ -567,7 +567,7 @@ error_code sys_spu_thread_group_terminate(u32 id, s32 value)
 		}
 	}
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	if (group->run_state <= SPU_THREAD_GROUP_STATUS_INITIALIZED ||
 		group->run_state == SPU_THREAD_GROUP_STATUS_WAITING ||
@@ -610,7 +610,7 @@ error_code sys_spu_thread_group_join(ppu_thread& ppu, u32 id, vm::ptr<u32> cause
 	s32 exit_value = 0;
 
 	{
-		semaphore_lock lock(group->mutex);
+		std::lock_guard lock(group->mutex);
 
 		if (group->run_state < SPU_THREAD_GROUP_STATUS_INITIALIZED)
 		{
@@ -647,7 +647,7 @@ error_code sys_spu_thread_group_join(ppu_thread& ppu, u32 id, vm::ptr<u32> cause
 			}
 
 			// TODO
-			group->cv.wait(lock, 1000);
+			group->cv.wait(group->mutex, 1000);
 			thread_ctrl::test();
 		}
 
@@ -757,7 +757,7 @@ error_code sys_spu_thread_write_ls(u32 id, u32 lsa, u64 value, u32 type)
 
 	const auto group = thread->group;
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	if (group->run_state < SPU_THREAD_GROUP_STATUS_WAITING || group->run_state > SPU_THREAD_GROUP_STATUS_RUNNING)
 	{
@@ -794,7 +794,7 @@ error_code sys_spu_thread_read_ls(u32 id, u32 lsa, vm::ptr<u64> value, u32 type)
 
 	const auto group = thread->group;
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	if (group->run_state < SPU_THREAD_GROUP_STATUS_WAITING || group->run_state > SPU_THREAD_GROUP_STATUS_RUNNING)
 	{
@@ -826,7 +826,7 @@ error_code sys_spu_thread_write_spu_mb(u32 id, u32 value)
 
 	const auto group = thread->group;
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	if (group->run_state < SPU_THREAD_GROUP_STATUS_WAITING || group->run_state > SPU_THREAD_GROUP_STATUS_RUNNING)
 	{
@@ -913,7 +913,7 @@ error_code sys_spu_thread_group_connect_event(u32 id, u32 eq, u32 et)
 		return CELL_ESRCH;
 	}
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	switch (et)
 	{
@@ -968,7 +968,7 @@ error_code sys_spu_thread_group_disconnect_event(u32 id, u32 et)
 		return CELL_ESRCH;
 	}
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	switch (et)
 	{
@@ -1030,7 +1030,7 @@ error_code sys_spu_thread_connect_event(u32 id, u32 eq, u32 et, u8 spup)
 		return CELL_EINVAL;
 	}
 
-	semaphore_lock lock(thread->group->mutex);
+	std::lock_guard lock(thread->group->mutex);
 
 	auto& port = thread->spup[spup];
 
@@ -1061,7 +1061,7 @@ error_code sys_spu_thread_disconnect_event(u32 id, u32 et, u8 spup)
 		return CELL_EINVAL;
 	}
 
-	semaphore_lock lock(thread->group->mutex);
+	std::lock_guard lock(thread->group->mutex);
 
 	auto& port = thread->spup[spup];
 
@@ -1092,7 +1092,7 @@ error_code sys_spu_thread_bind_queue(u32 id, u32 spuq, u32 spuq_num)
 		return CELL_EINVAL;
 	}
 
-	semaphore_lock lock(thread->group->mutex);
+	std::lock_guard lock(thread->group->mutex);
 
 	for (auto& v : thread->spuq)
 	{
@@ -1130,7 +1130,7 @@ error_code sys_spu_thread_unbind_queue(u32 id, u32 spuq_num)
 		return CELL_ESRCH;
 	}
 
-	semaphore_lock lock(thread->group->mutex);
+	std::lock_guard lock(thread->group->mutex);
 
 	for (auto& v : thread->spuq)
 	{
@@ -1162,7 +1162,7 @@ error_code sys_spu_thread_group_connect_event_all_threads(u32 id, u32 eq, u64 re
 		return CELL_EINVAL;
 	}
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	if (group->run_state < SPU_THREAD_GROUP_STATUS_INITIALIZED)
 	{
@@ -1232,7 +1232,7 @@ error_code sys_spu_thread_group_disconnect_event_all_threads(u32 id, u8 spup)
 		return CELL_EINVAL;
 	}
 
-	semaphore_lock lock(group->mutex);
+	std::lock_guard lock(group->mutex);
 
 	for (auto& t : group->threads)
 	{

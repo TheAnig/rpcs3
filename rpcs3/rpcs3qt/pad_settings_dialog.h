@@ -61,6 +61,7 @@ class pad_settings_dialog : public QDialog
 		id_reset_parameters,
 		id_blacklist,
 		id_refresh,
+		id_add_profile,
 		id_ok,
 		id_cancel
 	};
@@ -121,6 +122,9 @@ private:
 	int m_seconds = MAX_SECONDS;
 	QTimer m_timer;
 
+	// Mouse Move
+	QPoint m_last_pos;
+
 	// Input timer. Its Callback handles the input
 	QTimer m_timer_input;
 
@@ -146,6 +150,7 @@ private:
 protected:
 	/** Handle keyboard handler input */
 	void keyPressEvent(QKeyEvent *keyEvent) override;
-	void mousePressEvent(QMouseEvent *event) override;
+	void mouseReleaseEvent(QMouseEvent *event) override;
+	void mouseMoveEvent(QMouseEvent *event) override;
 	bool eventFilter(QObject* object, QEvent* event) override;
 };

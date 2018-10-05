@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <exception>
 #include <string>
@@ -110,8 +110,7 @@ namespace gl
 			{
 				if (!find_count) break;
 
-				const char *ext = (const char*)glGetStringi(GL_EXTENSIONS, i);
-				const auto ext_name = std::string(ext);
+				const std::string ext_name = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i));
 
 				if (ext_name == "GL_ARB_shader_draw_parameters")
 				{
@@ -171,10 +170,9 @@ namespace gl
 			}
 
 			//Workaround for intel drivers which have terrible capability reporting
-			std::string vendor_string;
-			if (const char* raw_string = (const char*)glGetString(GL_VENDOR))
+			std::string vendor_string = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+			if (!vendor_string.empty())
 			{
-				vendor_string = raw_string;
 				std::transform(vendor_string.begin(), vendor_string.end(), vendor_string.begin(), ::tolower);
 			}
 			else
@@ -1466,7 +1464,7 @@ namespace gl
 			depth = GL_TEXTURE_DEPTH_TYPE
 		};
 
-	private:
+	protected:
 		GLuint m_id = 0;
 		GLuint m_width = 0;
 		GLuint m_height = 0;
@@ -1890,6 +1888,12 @@ namespace gl
 		{
 			return{ component_swizzle[3], component_swizzle[0], component_swizzle[1], component_swizzle[2] };
 		}
+
+		u32 encoded_component_map() const
+		{
+			// Unused, OGL supports proper component swizzles
+			return 0u;
+		}
 	};
 
 	class viewable_image : public texture
@@ -1898,6 +1902,7 @@ namespace gl
 
 public:
 		using texture::texture;
+
 		texture_view* get_view(u32 remap_encoding, const std::pair<std::array<u8, 4>, std::array<u8, 4>>& remap)
 		{
 			auto found = views.find(remap_encoding);
@@ -1911,6 +1916,18 @@ public:
 			auto result = view.get();
 			views[remap_encoding] = std::move(view);
 			return result;
+		}
+
+		void set_native_component_layout(const std::array<GLenum, 4>& layout)
+		{
+			if (m_component_layout[0] != layout[0] ||
+				m_component_layout[1] != layout[1] ||
+				m_component_layout[2] != layout[2] ||
+				m_component_layout[3] != layout[3])
+			{
+				texture::set_native_component_layout(layout);
+				views.clear();
+			}
 		}
 	};
 
@@ -2026,6 +2043,9 @@ public:
 		GLuint m_id = GL_NONE;
 		size2i m_size;
 
+	protected:
+		std::unordered_map<GLenum, GLuint> m_resource_bindings;
+
 	public:
 		fbo() = default;
 
@@ -2095,9 +2115,21 @@ public:
 				return m_id;
 			}
 
+			GLuint resource_id() const
+			{
+				const auto found = m_parent.m_resource_bindings.find(m_id);
+				if (found != m_parent.m_resource_bindings.end())
+				{
+					return found->second;
+				}
+
+				return GL_NONE;
+			}
+
 			void operator = (const rbo& rhs)
 			{
 				save_binding_state save(m_parent);
+				m_parent.m_resource_bindings[m_id] = rhs.id();
 				glFramebufferRenderbuffer(GL_FRAMEBUFFER, m_id, GL_RENDERBUFFER, rhs.id());
 			}
 
@@ -2106,12 +2138,14 @@ public:
 				save_binding_state save(m_parent);
 
 				verify(HERE), rhs.get_target() == texture::target::texture2D;
+				m_parent.m_resource_bindings[m_id] = rhs.id();
 				glFramebufferTexture2D(GL_FRAMEBUFFER, m_id, GL_TEXTURE_2D, rhs.id(), 0);
 			}
 
 			void operator = (const GLuint rhs)
 			{
 				save_binding_state save(m_parent);
+				m_parent.m_resource_bindings[m_id] = rhs;
 				glFramebufferTexture2D(GL_FRAMEBUFFER, m_id, GL_TEXTURE_2D, rhs, 0);
 			}
 		};
@@ -2199,6 +2233,9 @@ public:
 
 		void set_extents(size2i extents);
 		size2i get_extents() const;
+
+		bool matches(const std::array<GLuint, 4>& color_targets, GLuint depth_stencil_target) const;
+		bool references_any(const std::vector<GLuint>& resources) const;
 
 		explicit operator bool() const
 		{

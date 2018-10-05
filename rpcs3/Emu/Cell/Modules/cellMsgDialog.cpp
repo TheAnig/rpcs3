@@ -15,11 +15,21 @@ MsgDialogBase::~MsgDialogBase()
 {
 }
 
+// forward declaration for open_msg_dialog
+s32 cellMsgDialogOpen2(u32 type, vm::cptr<char> msgString, vm::ptr<CellMsgDialogCallback> callback, vm::ptr<void> userData, vm::ptr<void> extParam);
+
+// wrapper to call for other hle dialogs
+s32 open_msg_dialog(u32 type, vm::cptr<char> msgString, vm::ptr<CellMsgDialogCallback> callback, vm::ptr<void> userData, vm::ptr<void> extParam)
+{
+	cellSysutil.warning("open_msg_dialog called. This will call cellMsgDialogOpen2");
+	return cellMsgDialogOpen2(type, msgString, callback, userData, extParam);
+}
+
 s32 cellMsgDialogOpen2(u32 type, vm::cptr<char> msgString, vm::ptr<CellMsgDialogCallback> callback, vm::ptr<void> userData, vm::ptr<void> extParam)
 {
 	cellSysutil.warning("cellMsgDialogOpen2(type=0x%x, msgString=%s, callback=*0x%x, userData=*0x%x, extParam=*0x%x)", type, msgString, callback, userData, extParam);
 
-	if (!msgString || std::strlen(msgString.get_ptr()) >= 0x200 || type & -0x33f8)
+	if (!msgString || std::strlen(msgString.get_ptr()) >= CELL_MSGDIALOG_STRING_SIZE || type & -0x33f8)
 	{
 		return CELL_MSGDIALOG_ERROR_PARAM;
 	}
@@ -139,12 +149,12 @@ s32 cellMsgDialogOpen2(u32 type, vm::cptr<char> msgString, vm::ptr<CellMsgDialog
 
 s32 cellMsgDialogOpen(u32 type, vm::cptr<char> msgString, vm::ptr<CellMsgDialogCallback> callback, vm::ptr<void> userData, vm::ptr<void> extParam)
 {
-	//Note: This function needs proper implementation, solve first argument "type" conflict with MsgDialogOpen2 in cellMsgDialog.h.
+	// Note: This function needs proper implementation, solve first argument "type" conflict with MsgDialogOpen2 in cellMsgDialog.h.
 	cellSysutil.todo("cellMsgDialogOpen(type=0x%x, msgString=%s, callback=*0x%x, userData=*0x%x, extParam=*0x%x)", type, msgString, callback, userData, extParam);
 	return cellMsgDialogOpen2(type, msgString, callback, userData, extParam);
 }
 
-s32 cellMsgDialogOpenErrorCode(ppu_thread& ppu, u32 errorCode, vm::ptr<CellMsgDialogCallback> callback, vm::ptr<void> userData, vm::ptr<void> extParam)
+s32 cellMsgDialogOpenErrorCode(u32 errorCode, vm::ptr<CellMsgDialogCallback> callback, vm::ptr<void> userData, vm::ptr<void> extParam)
 {
 	cellSysutil.warning("cellMsgDialogOpenErrorCode(errorCode=0x%x, callback=*0x%x, userData=*0x%x, extParam=*0x%x)", errorCode, callback, userData, extParam);
 
@@ -221,12 +231,6 @@ s32 cellMsgDialogOpenErrorCode(ppu_thread& ppu, u32 errorCode, vm::ptr<CellMsgDi
 	return cellMsgDialogOpen2(CELL_MSGDIALOG_TYPE_SE_TYPE_ERROR | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, vm::make_str(error), callback, userData, extParam);
 }
 
-s32 cellMsgDialogOpenSimulViewWarning(vm::ptr<CellMsgDialogCallback> callback, vm::ptr<void> userData, vm::ptr<void> extParam)
-{
-	cellSysutil.todo("cellMsgDialogOpenSimulViewWarning(callback=*0x%x, userData=*0x%x, extParam=*0x%x)", callback, userData, extParam);
-	return CELL_OK;
-}
-
 s32 cellMsgDialogClose(f32 delay)
 {
 	cellSysutil.warning("cellMsgDialogClose(delay=%f)", delay);
@@ -238,7 +242,7 @@ s32 cellMsgDialogClose(f32 delay)
 	{
 		if (auto dlg = manager->get<rsx::overlays::message_dialog>())
 		{
-			thread_ctrl::spawn("cellMsgDialogClose() Thread", [=]
+			thread_ctrl::make_shared("cellMsgDialogClose() Thread", [=]
 			{
 				while (get_system_time() < wait_until)
 				{
@@ -252,7 +256,7 @@ s32 cellMsgDialogClose(f32 delay)
 				}
 
 				dlg->close();
-			});
+			})->detach();
 
 			return CELL_OK;
 		}
@@ -265,7 +269,7 @@ s32 cellMsgDialogClose(f32 delay)
 		return CELL_MSGDIALOG_ERROR_DIALOG_NOT_OPENED;
 	}
 
-	thread_ctrl::spawn("cellMsgDialogClose() Thread", [=]()
+	thread_ctrl::make_shared("cellMsgDialogClose() Thread", [=]()
 	{
 		while (dlg->state == MsgDialogState::Open && get_system_time() < wait_until)
 		{
@@ -275,7 +279,7 @@ s32 cellMsgDialogClose(f32 delay)
 		}
 
 		dlg->on_close(CELL_MSGDIALOG_BUTTON_NONE);
-	});
+	})->detach();
 
 	return CELL_OK;
 }
@@ -309,11 +313,24 @@ s32 cellMsgDialogAbort()
 	return CELL_OK;
 }
 
+s32 cellMsgDialogOpenSimulViewWarning(vm::ptr<CellMsgDialogCallback> callback, vm::ptr<void> userData, vm::ptr<void> extParam)
+{
+	cellSysutil.todo("cellMsgDialogOpenSimulViewWarning(callback=*0x%x, userData=*0x%x, extParam=*0x%x)", callback, userData, extParam);
+
+	s32 ret = cellMsgDialogOpen2(CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, vm::make_str("SimulView Warning"), callback, userData, extParam);
+
+	// The dialog should ideally only be closeable by pressing ok after 3 seconds until it closes itself automatically after 5 seconds
+	if (ret == CELL_OK)
+		cellMsgDialogClose(5000.0f);
+
+	return ret;
+}
+
 s32 cellMsgDialogProgressBarSetMsg(u32 progressBarIndex, vm::cptr<char> msgString)
 {
 	cellSysutil.warning("cellMsgDialogProgressBarSetMsg(progressBarIndex=%d, msgString=%s)", progressBarIndex, msgString);
 
-	if (!msgString)
+	if (!msgString || std::strlen(msgString.get_ptr()) >= CELL_MSGDIALOG_PROGRESSBAR_STRING_SIZE)
 	{
 		return CELL_MSGDIALOG_ERROR_PARAM;
 	}

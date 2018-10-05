@@ -11,7 +11,7 @@
 #include <thread>
 #include <mutex>
 
-logs::channel libmixer("libmixer");
+LOG_CHANNEL(libmixer);
 
 struct SurMixerConfig
 {
@@ -81,7 +81,7 @@ s32 cellAANAddData(u32 aan_handle, u32 aan_port, u32 offset, vm::ptr<float> addr
 		return CELL_LIBMIXER_ERROR_INVALID_PARAMATER;
 	}
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	if (type == CELL_SURMIXER_CHSTRIP_TYPE1A)
 	{
@@ -91,7 +91,7 @@ s32 cellAANAddData(u32 aan_handle, u32 aan_port, u32 offset, vm::ptr<float> addr
 			const float center = addr[i];
 			g_surmx.mixdata[i * 8 + 0] += center;
 			g_surmx.mixdata[i * 8 + 1] += center;
-		}		
+		}
 	}
 	else if (type == CELL_SURMIXER_CHSTRIP_TYPE2A)
 	{
@@ -132,7 +132,7 @@ s32 cellAANAddData(u32 aan_handle, u32 aan_port, u32 offset, vm::ptr<float> addr
 		}
 	}
 
-	return CELL_OK; 
+	return CELL_OK;
 }
 
 s32 cellAANConnect(u32 receive, u32 receivePortNo, u32 source, u32 sourcePortNo)
@@ -140,7 +140,7 @@ s32 cellAANConnect(u32 receive, u32 receivePortNo, u32 source, u32 sourcePortNo)
 	libmixer.warning("cellAANConnect(receive=0x%x, receivePortNo=0x%x, source=0x%x, sourcePortNo=0x%x)",
 		receive, receivePortNo, source, sourcePortNo);
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	if (source >= g_ssp.size() || !g_ssp[source].m_created)
 	{
@@ -158,7 +158,7 @@ s32 cellAANDisconnect(u32 receive, u32 receivePortNo, u32 source, u32 sourcePort
 	libmixer.warning("cellAANDisconnect(receive=0x%x, receivePortNo=0x%x, source=0x%x, sourcePortNo=0x%x)",
 		receive, receivePortNo, source, sourcePortNo);
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	if (source >= g_ssp.size() || !g_ssp[source].m_created)
 	{
@@ -170,7 +170,7 @@ s32 cellAANDisconnect(u32 receive, u32 receivePortNo, u32 source, u32 sourcePort
 
 	return CELL_OK;
 }
- 
+
 s32 cellSSPlayerCreate(vm::ptr<u32> handle, vm::ptr<CellSSPlayerConfig> config)
 {
 	libmixer.warning("cellSSPlayerCreate(handle=*0x%x, config=*0x%x)", handle, config);
@@ -181,14 +181,14 @@ s32 cellSSPlayerCreate(vm::ptr<u32> handle, vm::ptr<CellSSPlayerConfig> config)
 		return CELL_LIBMIXER_ERROR_INVALID_PARAMATER;
 	}
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	SSPlayer p;
 	p.m_created = true;
 	p.m_connected = false;
 	p.m_active = false;
 	p.m_channels = config->channels;
-	
+
 	g_ssp.push_back(p);
 	*handle = (u32)g_ssp.size() - 1;
 	return CELL_OK;
@@ -198,7 +198,7 @@ s32 cellSSPlayerRemove(u32 handle)
 {
 	libmixer.warning("cellSSPlayerRemove(handle=0x%x)", handle);
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	if (handle >= g_ssp.size() || !g_ssp[handle].m_created)
 	{
@@ -217,7 +217,7 @@ s32 cellSSPlayerSetWave(u32 handle, vm::ptr<CellSSPlayerWaveParam> waveInfo, vm:
 {
 	libmixer.warning("cellSSPlayerSetWave(handle=0x%x, waveInfo=*0x%x, commonInfo=*0x%x)", handle, waveInfo, commonInfo);
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	if (handle >= g_ssp.size() || !g_ssp[handle].m_created)
 	{
@@ -240,7 +240,7 @@ s32 cellSSPlayerPlay(u32 handle, vm::ptr<CellSSPlayerRuntimeInfo> info)
 {
 	libmixer.warning("cellSSPlayerPlay(handle=0x%x, info=*0x%x)", handle, info);
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	if (handle >= g_ssp.size() || !g_ssp[handle].m_created)
 	{
@@ -264,7 +264,7 @@ s32 cellSSPlayerStop(u32 handle, u32 mode)
 {
 	libmixer.warning("cellSSPlayerStop(handle=0x%x, mode=0x%x)", handle, mode);
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	if (handle >= g_ssp.size() || !g_ssp[handle].m_created)
 	{
@@ -283,7 +283,7 @@ s32 cellSSPlayerSetParam(u32 handle, vm::ptr<CellSSPlayerRuntimeInfo> info)
 {
 	libmixer.warning("cellSSPlayerSetParam(handle=0x%x, info=*0x%x)", handle, info);
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	if (handle >= g_ssp.size() || !g_ssp[handle].m_created)
 	{
@@ -292,7 +292,7 @@ s32 cellSSPlayerSetParam(u32 handle, vm::ptr<CellSSPlayerRuntimeInfo> info)
 	}
 
 	// TODO: check parameters
-	
+
 	g_ssp[handle].m_level = info->level;
 	g_ssp[handle].m_speed = info->speed;
 	g_ssp[handle].m_x = info->position.x;
@@ -301,12 +301,12 @@ s32 cellSSPlayerSetParam(u32 handle, vm::ptr<CellSSPlayerRuntimeInfo> info)
 
 	return CELL_OK;
 }
- 
+
 s32 cellSSPlayerGetState(u32 handle)
 {
 	libmixer.warning("cellSSPlayerGetState(handle=0x%x)", handle);
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	if (handle >= g_ssp.size() || !g_ssp[handle].m_created)
 	{
@@ -354,7 +354,7 @@ struct surmixer_thread : ppu_thread
 				//u64 stamp1 = get_system_time();
 
 				{
-					std::lock_guard<std::mutex> lock(g_surmx.mutex);
+					std::lock_guard lock(g_surmx.mutex);
 
 					for (auto& p : g_ssp) if (p.m_active && p.m_created)
 					{
@@ -589,7 +589,7 @@ s32 cellSurMixerSurBusAddData(u32 busNo, u32 offset, vm::ptr<float> addr, u32 sa
 		return CELL_OK;
 	}
 
-	std::lock_guard<std::mutex> lock(g_surmx.mutex);
+	std::lock_guard lock(g_surmx.mutex);
 
 	for (u32 i = 0; i < samples; i++)
 	{

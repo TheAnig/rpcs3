@@ -1,5 +1,5 @@
-#include "stdafx.h"
-#include "Emu/Memory/Memory.h"
+﻿#include "stdafx.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "VKGSRender.h"
 #include "../rsx_methods.h"
@@ -212,7 +212,7 @@ namespace
 			auto &draw_clause = rsx::method_registers.current_draw_clause;
 			VkPrimitiveTopology prims = vk::get_appropriate_topology(draw_clause.primitive, primitives_emulated);
 			
-			const u32 vertex_count = (u32)command.inline_vertex_array.size() * sizeof(u32) / m_vertex_layout.interleaved_blocks[0].attribute_stride;
+			const u32 vertex_count = ((u32)command.inline_vertex_array.size() * sizeof(u32)) / m_vertex_layout.interleaved_blocks[0].attribute_stride;
 
 			if (!primitives_emulated)
 			{
@@ -235,8 +235,11 @@ vk::vertex_upload_info VKGSRender::upload_vertex_data()
 {
 	m_vertex_layout = analyse_inputs_interleaved();
 
+	if (!m_vertex_layout.validate())
+		return {};
+
 	draw_command_visitor visitor(m_index_buffer_ring_info, m_vertex_layout);
-	auto result = std::apply_visitor(visitor, get_draw_command(rsx::method_registers));
+	auto result = std::visit(visitor, get_draw_command(rsx::method_registers));
 
 	auto &vertex_count = result.allocated_vertex_count;
 	auto &vertex_base = result.vertex_data_base;
@@ -322,11 +325,13 @@ vk::vertex_upload_info VKGSRender::upload_vertex_data()
 	{
 		if (!m_persistent_attribute_storage || !m_persistent_attribute_storage->in_range(persistent_range_base, required.first, persistent_range_base))
 		{
+			verify("Incompatible driver (MacOS?)" HERE), m_texbuffer_view_size >= required.first;
+
 			if (m_persistent_attribute_storage)
 				m_current_frame->buffer_views_to_clean.push_back(std::move(m_persistent_attribute_storage));
 
 			//View 64M blocks at a time (different drivers will only allow a fixed viewable heap size, 64M should be safe)
-			const size_t view_size = (persistent_range_base + 0x4000000) > m_attrib_ring_info.size() ? m_attrib_ring_info.size() - persistent_range_base : 0x4000000;
+			const size_t view_size = (persistent_range_base + m_texbuffer_view_size) > m_attrib_ring_info.size() ? m_attrib_ring_info.size() - persistent_range_base : m_texbuffer_view_size;
 			m_persistent_attribute_storage = std::make_unique<vk::buffer_view>(*m_device, m_attrib_ring_info.heap->value, VK_FORMAT_R8_UINT, persistent_range_base, view_size);
 			persistent_range_base = 0;
 		}
@@ -336,10 +341,12 @@ vk::vertex_upload_info VKGSRender::upload_vertex_data()
 	{
 		if (!m_volatile_attribute_storage || !m_volatile_attribute_storage->in_range(volatile_range_base, required.second, volatile_range_base))
 		{
+			verify("Incompatible driver (MacOS?)" HERE), m_texbuffer_view_size >= required.second;
+
 			if (m_volatile_attribute_storage)
 				m_current_frame->buffer_views_to_clean.push_back(std::move(m_volatile_attribute_storage));
 
-			const size_t view_size = (volatile_range_base + 0x4000000) > m_attrib_ring_info.size() ? m_attrib_ring_info.size() - volatile_range_base : 0x4000000;
+			const size_t view_size = (volatile_range_base + m_texbuffer_view_size) > m_attrib_ring_info.size() ? m_attrib_ring_info.size() - volatile_range_base : m_texbuffer_view_size;
 			m_volatile_attribute_storage = std::make_unique<vk::buffer_view>(*m_device, m_attrib_ring_info.heap->value, VK_FORMAT_R8_UINT, volatile_range_base, view_size);
 			volatile_range_base = 0;
 		}

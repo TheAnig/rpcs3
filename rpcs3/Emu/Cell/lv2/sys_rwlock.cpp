@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "Emu/Memory/Memory.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
@@ -10,7 +10,7 @@
 
 
 
-logs::channel sys_rwlock("sys_rwlock");
+LOG_CHANNEL(sys_rwlock);
 
 template<> DECLARE(ipc_manager<lv2_rwlock, u64>::g_ipc) {};
 
@@ -91,7 +91,7 @@ error_code sys_rwlock_rlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 			}
 		}
 
-		semaphore_lock lock(rwlock.mutex);
+		std::lock_guard lock(rwlock.mutex);
 
 		const s64 _old = rwlock.owner.fetch_op([&](s64& val)
 		{
@@ -135,7 +135,7 @@ error_code sys_rwlock_rlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 
 			if (passed >= timeout)
 			{
-				semaphore_lock lock(rwlock->mutex);
+				std::lock_guard lock(rwlock->mutex);
 
 				if (!rwlock->unqueue(rwlock->rq, &ppu))
 				{
@@ -220,7 +220,7 @@ error_code sys_rwlock_runlock(ppu_thread& ppu, u32 rw_lock_id)
 	}
 	else
 	{
-		semaphore_lock lock(rwlock->mutex);
+		std::lock_guard lock(rwlock->mutex);
 
 		// Remove one reader
 		const s64 _old = rwlock->owner.fetch_op([](s64& val)
@@ -276,7 +276,7 @@ error_code sys_rwlock_wlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 			return val;
 		}
 
-		semaphore_lock lock(rwlock.mutex);
+		std::lock_guard lock(rwlock.mutex);
 
 		const s64 _old = rwlock.owner.fetch_op([&](s64& val)
 		{
@@ -324,7 +324,7 @@ error_code sys_rwlock_wlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 
 			if (passed >= timeout)
 			{
-				semaphore_lock lock(rwlock->mutex);
+				std::lock_guard lock(rwlock->mutex);
 
 				if (!rwlock->unqueue(rwlock->wq, &ppu))
 				{
@@ -414,7 +414,7 @@ error_code sys_rwlock_wunlock(ppu_thread& ppu, u32 rw_lock_id)
 
 	if (rwlock.ret & 1)
 	{
-		semaphore_lock lock(rwlock->mutex);
+		std::lock_guard lock(rwlock->mutex);
 
 		if (auto cpu = rwlock->schedule<ppu_thread>(rwlock->wq, rwlock->protocol))
 		{

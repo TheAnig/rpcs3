@@ -14,7 +14,7 @@
 
 #include "Utilities/StrUtil.h"
 
-logs::channel sceNpTrophy("sceNpTrophy");
+LOG_CHANNEL(sceNpTrophy);
 
 TrophyNotificationBase::~TrophyNotificationBase()
 {
@@ -296,8 +296,7 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 		}
 	}
 
-	// TODO: Get the path of the current user
-	std::string trophyPath = "/dev_hdd0/home/00000001/trophy/" + ctxt->trp_name;
+	std::string trophyPath = "/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name;
 	if (!trp.Install(trophyPath))
 	{
 		return SCE_NP_TROPHY_ERROR_ILLEGAL_UPDATE;
@@ -310,14 +309,25 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 	ctxt->tropusr.reset(tropusr);
 
 	// TODO: Callbacks
-	if (statusCb(ppu, context, SCE_NP_TROPHY_STATUS_INSTALLED, 100, 100, arg) < 0)
-	{
-		return SCE_NP_TROPHY_ERROR_PROCESSING_ABORTED;
-	}
+	// From RE-ing a game's state machine, it seems the possible order is one of the following:
+	// * Install (Not installed)  - Setup - Progress * ? - Finalize - Complete - Installed
+	// * Reinstall (Corrupted)    - Setup - Progress * ? - Finalize - Complete - Installed
+	// * Update (Required update) - Setup - Progress * ? - Finalize - Complete - Installed
+	// * Installed
+	// We will go with the easy path of Installed, and that's it.
 
-	if (statusCb(ppu, context, SCE_NP_TROPHY_STATUS_PROCESSING_COMPLETE, 100, 100, arg) < 0)
+	auto statuses = {SCE_NP_TROPHY_STATUS_NOT_INSTALLED,
+					 SCE_NP_TROPHY_STATUS_PROCESSING_SETUP,
+					 SCE_NP_TROPHY_STATUS_PROCESSING_PROGRESS,
+					 SCE_NP_TROPHY_STATUS_PROCESSING_FINALIZE,
+					 SCE_NP_TROPHY_STATUS_PROCESSING_COMPLETE};
+
+	for (auto status : statuses)
 	{
-		return SCE_NP_TROPHY_ERROR_PROCESSING_ABORTED;
+		if (statusCb(ppu, context, status, 100, 100, arg) < 0)
+		{
+			return SCE_NP_TROPHY_ERROR_PROCESSING_ABORTED;
+		}
 	}
 
 	return CELL_OK;
@@ -346,7 +356,7 @@ error_code sceNpTrophyGetRequiredDiskSpace(u32 context, u32 handle, vm::ptr<u64>
 		return SCE_NP_TROPHY_ERROR_UNKNOWN_HANDLE;
 	}
 
-	if (!fs::is_dir(vfs::get("/dev_hdd0/home/00000001/trophy/" + ctxt->trp_name)))
+	if (!fs::is_dir(vfs::get("/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name)))
 	{
 		TRPLoader trp(ctxt->trp_stream);
 
@@ -405,8 +415,7 @@ error_code sceNpTrophyGetGameInfo(u32 context, u32 handle, vm::ptr<SceNpTrophyGa
 		return SCE_NP_TROPHY_ERROR_UNKNOWN_HANDLE;
 	}
 
-	// TODO: Get the path of the current user
-	fs::file config(vfs::get("/dev_hdd0/home/00000001/trophy/" + ctxt->trp_name + "/TROPCONF.SFM"));
+	fs::file config(vfs::get("/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name + "/TROPCONF.SFM"));
 
 	if (!config)
 	{
@@ -505,7 +514,7 @@ error_code sceNpTrophyUnlockTrophy(u32 context, u32 handle, s32 trophyId, vm::pt
 		return SCE_NP_TROPHY_ERROR_ALREADY_UNLOCKED;
 
 	ctxt->tropusr->UnlockTrophy(trophyId, 0, 0); // TODO
-	std::string trophyPath = "/dev_hdd0/home/00000001/trophy/" + ctxt->trp_name + "/TROPUSR.DAT";
+	std::string trophyPath = "/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name + "/TROPUSR.DAT";
 	ctxt->tropusr->Save(trophyPath);
 
 	if (platinumId)
@@ -527,14 +536,15 @@ error_code sceNpTrophyUnlockTrophy(u32 context, u32 handle, s32 trophyId, vm::pt
 		}
 
 		// Get icon for the notification.
-		std::string trophyIconPath = "/dev_hdd0/home/00000001/trophy/" + ctxt->trp_name + "/TROP" + padding + std::to_string(trophyId) + ".PNG";
+		std::string paddedTrophyId = padding + std::to_string(trophyId);
+		std::string trophyIconPath = "/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name + "/TROP" + paddedTrophyId + ".PNG";
 		fs::file trophyIconFile = fs::file(vfs::get(trophyIconPath));
 		size_t iconSize = trophyIconFile.size();
 		std::vector<uchar> trophyIconData;
 		trophyIconFile.read(trophyIconData, iconSize);
 
-		vm::ptr<SceNpTrophyDetails> details = vm::make_var(SceNpTrophyDetails());
-		vm::ptr<SceNpTrophyData> _ = vm::make_var(SceNpTrophyData());
+		vm::var<SceNpTrophyDetails> details({0});
+		vm::var<SceNpTrophyData> _({0});
 
 		s32 ret = sceNpTrophyGetTrophyInfo(context, handle, trophyId, details, _);
 		if (ret != CELL_OK)
@@ -612,8 +622,7 @@ error_code sceNpTrophyGetTrophyInfo(u32 context, u32 handle, s32 trophyId, vm::p
 		return SCE_NP_TROPHY_ERROR_UNKNOWN_HANDLE;
 	}
 
-	// TODO: Get the path of the current user
-	fs::file config(vfs::get("/dev_hdd0/home/00000001/trophy/" + ctxt->trp_name + "/TROPCONF.SFM"));
+	fs::file config(vfs::get("/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name + "/TROPCONF.SFM"));
 
 	if (!config)
 	{
@@ -756,7 +765,7 @@ error_code sceNpTrophyGetGameIcon(u32 context, u32 handle, vm::ptr<void> buffer,
 		return SCE_NP_TROPHY_ERROR_UNKNOWN_HANDLE;
 	}
 
-	fs::file icon_file(vfs::get("/dev_hdd0/home/00000001/trophy/" + ctxt->trp_name + "/ICON0.PNG"));
+	fs::file icon_file(vfs::get("/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name + "/ICON0.PNG"));
 
 	if (!icon_file)
 	{
@@ -809,7 +818,7 @@ error_code sceNpTrophyGetTrophyIcon(u32 context, u32 handle, s32 trophyId, vm::p
 		return hidden ? SCE_NP_TROPHY_ERROR_HIDDEN : SCE_NP_TROPHY_ERROR_LOCKED;
 	}
 
-	fs::file icon_file(vfs::get("/dev_hdd0/home/00000001/trophy/" + ctxt->trp_name + fmt::format("/TROP%03d.PNG", trophyId)));
+	fs::file icon_file(vfs::get("/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name + fmt::format("/TROP%03d.PNG", trophyId)));
 
 	if (!icon_file)
 	{

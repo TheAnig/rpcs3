@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "Emu/Memory/Memory.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 
 #include "FragmentProgramDecompiler.h"
@@ -111,6 +111,8 @@ void FragmentProgramDecompiler::SetDst(std::string code, bool append_mask)
 	}
 
 	u32 reg_index = dst.fp16 ? dst.dest_reg >> 1 : dst.dest_reg;
+
+	verify(HERE), reg_index < temp_registers.size();
 	temp_registers[reg_index].tag(dst.dest_reg, !!dst.fp16, dst.mask_x, dst.mask_y, dst.mask_z, dst.mask_w);
 }
 
@@ -181,7 +183,7 @@ std::string FragmentProgramDecompiler::AddConst()
 		return name;
 	}
 
-	auto data = (be_t<u32>*) ((char*)m_prog.addr + m_size + 4 * SIZE_32(u32));
+	auto data = (be_t<u32>*) ((char*)m_prog.addr + m_size + 4 * u32{sizeof(u32)});
 
 	m_offset = 2 * 4 * sizeof(u32);
 	u32 x = GetData(data[0]);
@@ -262,7 +264,7 @@ std::string FragmentProgramDecompiler::ClampValue(const std::string& code, u32 p
 bool FragmentProgramDecompiler::DstExpectsSca()
 {
 	int writes = 0;
-	
+
 	if (dst.mask_x) writes++;
 	if (dst.mask_y) writes++;
 	if (dst.mask_z) writes++;
@@ -442,7 +444,7 @@ template<typename T> std::string FragmentProgramDecompiler::GetSRC(T src)
 			properties.has_wpos_input = true;
 			break;
 		default:
-			if (dst.src_attr_reg_num < sizeof(reg_table) / sizeof(reg_table[0]))
+			if (dst.src_attr_reg_num < std::size(reg_table))
 			{
 				ret += m_parr.AddParam(PF_PARAM_IN, getFloatTypeName(4), reg_table[dst.src_attr_reg_num]);
 			}

@@ -29,6 +29,9 @@ namespace rsx
 		bool is_depth_texture = false;
 		f32 scale_x = 1.f;
 		f32 scale_y = 1.f;
+
+		virtual ~sampled_image_descriptor_base() {}
+		virtual u32 encoded_component_map() const = 0;
 	};
 }
 

@@ -307,7 +307,7 @@ struct offset32_array<v128::masked_array_t<T, N, M>>
 	template <typename Arg>
 	static inline u32 index32(const Arg& arg)
 	{
-		return SIZE_32(T) * (static_cast<u32>(arg) ^ static_cast<u32>(M));
+		return u32{sizeof(T)} * (static_cast<u32>(arg) ^ static_cast<u32>(M));
 	}
 };
 
@@ -334,7 +334,10 @@ inline v128 operator~(const v128& other)
 template <typename T, std::size_t Align, std::size_t Size>
 struct se_storage
 {
-	using type = std::aligned_storage_t<Size, Align>;
+	struct type
+	{
+		alignas(Align) std::byte data[Size];
+	};
 
 	// Unoptimized generic byteswap for unaligned data
 	static void reverse(u8* dst, const u8* src)

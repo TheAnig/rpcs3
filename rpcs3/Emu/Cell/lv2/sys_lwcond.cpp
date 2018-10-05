@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "Emu/Memory/Memory.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "Emu/IdManager.h"
 
@@ -10,7 +10,7 @@
 
 
 
-logs::channel sys_lwcond("sys_lwcond");
+LOG_CHANNEL(sys_lwcond);
 
 extern u64 get_system_time();
 
@@ -81,7 +81,7 @@ error_code _sys_lwcond_signal(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id, u3
 
 		if (cond.waiters)
 		{
-			semaphore_lock lock(cond.mutex);
+			std::lock_guard lock(cond.mutex);
 
 			cpu_thread* result = nullptr;
 
@@ -114,7 +114,7 @@ error_code _sys_lwcond_signal(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id, u3
 				if (mode == 1)
 				{
 					verify(HERE), !mutex->signaled;
-					semaphore_lock lock(mutex->mutex);
+					std::lock_guard lock(mutex->mutex);
 					mutex->sq.emplace_back(result);
 					result = nullptr;
 					mode = 2; // Enforce CELL_OK
@@ -174,7 +174,7 @@ error_code _sys_lwcond_signal_all(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 		if (cond.waiters)
 		{
-			semaphore_lock lock(cond.mutex);
+			std::lock_guard lock(cond.mutex);
 
 			u32 result = 0;
 
@@ -190,7 +190,7 @@ error_code _sys_lwcond_signal_all(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 				if (mode == 1)
 				{
 					verify(HERE), !mutex->signaled;
-					semaphore_lock lock(mutex->mutex);
+					std::lock_guard lock(mutex->mutex);
 					mutex->sq.emplace_back(cpu);
 				}
 				else
@@ -241,14 +241,14 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 			return nullptr;
 		}
 
-		semaphore_lock lock(cond.mutex);
+		std::lock_guard lock(cond.mutex);
 
 		// Add a waiter
 		cond.waiters++;
 		cond.sq.emplace_back(&ppu);
 		cond.sleep(ppu, timeout);
 
-		semaphore_lock lock2(mutex->mutex);
+		std::lock_guard lock2(mutex->mutex);
 
 		// Process lwmutex sleep queue
 		if (const auto cpu = mutex->schedule<ppu_thread>(mutex->sq, mutex->protocol))
@@ -280,7 +280,7 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 			if (passed >= timeout)
 			{
-				semaphore_lock lock(cond->mutex);
+				std::lock_guard lock(cond->mutex);
 
 				if (!cond->unqueue(cond->sq, &ppu))
 				{
@@ -290,7 +290,7 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 				cond->waiters--;
 
-				if (mutex->signaled.fetch_op([](u32& v) { if (v) v--; }))
+				if (mutex->signaled.fetch_dec_sat())
 				{
 					ppu.gpr[3] = CELL_EDEADLK;
 					break;

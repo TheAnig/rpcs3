@@ -24,7 +24,7 @@ enum class cpu_flag : u32
 // Flag set for pause state
 constexpr bs_t<cpu_flag> cpu_state_pause = cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause;
 
-class cpu_thread : public named_thread
+class cpu_thread : public old_thread
 {
 	void on_task() override final;
 
@@ -37,7 +37,7 @@ public:
 	cpu_thread(u32 id);
 
 	// Public thread state
-	atomic_t<bs_t<cpu_flag>> state{+cpu_flag::stop};
+	atomic_bs_t<cpu_flag> state{+cpu_flag::stop};
 
 	// Process thread state, return true if the checker must return
 	bool check_state();

@@ -1,5 +1,5 @@
-#include "stdafx.h"
-#include "Emu/Memory/Memory.h"
+﻿#include "stdafx.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "GLGSRender.h"
 #include "GLVertexProgram.h"
@@ -181,8 +181,7 @@ void GLGSRender::end()
 	std::chrono::time_point<steady_clock> state_check_start = steady_clock::now();
 
 	if (skip_frame || !framebuffer_status_valid ||
-		(conditional_render_enabled && conditional_render_test_failed) ||
-		!check_program_state())
+		(conditional_render_enabled && conditional_render_test_failed))
 	{
 		rsx::thread::end();
 		return;
@@ -202,16 +201,41 @@ void GLGSRender::end()
 		m_index_ring_buffer->reserve_storage_on_heap(16 * 1024);
 	}
 
+	const auto do_heap_cleanup = [this]()
+	{
+		if (manually_flush_ring_buffers)
+		{
+			m_attrib_ring_buffer->unmap();
+			m_index_ring_buffer->unmap();
+		}
+		else
+		{
+			//DMA push; not needed with MAP_COHERENT
+			//glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT);
+		}
+	};
+
 	//Do vertex upload before RTT prep / texture lookups to give the driver time to push data
 	auto upload_info = set_vertex_buffer();
 
+	if (upload_info.vertex_draw_count == 0)
+	{
+		// Malformed vertex setup; abort
+		do_heap_cleanup();
+		rsx::thread::end();
+		return;
+	}
+
 	//Check if depth buffer is bound and valid
 	//If ds is not initialized clear it; it seems new depth textures should have depth cleared
-	auto copy_rtt_contents = [](gl::render_target *surface, bool is_depth)
+	auto copy_rtt_contents = [this](gl::render_target *surface, bool is_depth)
 	{
 		if (surface->get_internal_format() == surface->old_contents->get_internal_format())
 		{
-			//Copy data from old contents onto this one
+			// Disable stencil test to avoid switching off and back on later
+			gl_state.enable(GL_FALSE, GL_SCISSOR_TEST);
+
+			// Copy data from old contents onto this one
 			const auto region = rsx::get_transferable_region(surface);
 			gl::g_hw_blitter->scale_image(surface->old_contents, surface, { 0, 0, std::get<0>(region), std::get<1>(region) }, { 0, 0, std::get<2>(region) , std::get<3>(region) }, !is_depth, is_depth, {});
 
@@ -244,11 +268,9 @@ void GLGSRender::end()
 		clear_depth = true;
 	}
 
-	//Temporarily disable pixel tests
-	glDisable(GL_SCISSOR_TEST);
-
 	if (clear_depth || buffers_to_clear.size() > 0)
 	{
+		gl_state.enable(GL_FALSE, GL_SCISSOR_TEST);
 		GLenum mask = 0;
 
 		if (clear_depth)
@@ -269,7 +291,7 @@ void GLGSRender::end()
 			GLfloat colors[] = { 0.f, 0.f, 0.f, 0.f };
 			//It is impossible for the render target to be type A or B here (clear all would have been flagged)
 			for (auto &i : buffers_to_clear)
-				glClearBufferfv(draw_fbo.id(), i, colors);
+				glClearBufferfv(m_draw_fbo->id(), i, colors);
 		}
 
 		if (clear_depth)
@@ -280,6 +302,7 @@ void GLGSRender::end()
 		ds->old_contents->get_internal_format() == gl::texture::internal_format::rgba8)
 	{
 		// TODO: Partial memory transfer
+		gl_state.enable(GL_FALSE, GL_SCISSOR_TEST);
 		m_depth_converter.run(ds->width(), ds->height(), ds->id(), ds->old_contents->id());
 		ds->on_write();
 	}
@@ -299,13 +322,14 @@ void GLGSRender::end()
 		}
 	}
 
-	glEnable(GL_SCISSOR_TEST);
+	// Unconditionally enable stencil test if it was disabled before
+	gl_state.enable(GL_TRUE, GL_SCISSOR_TEST);
 
-	//Load textures
+	// Load textures
 	{
 		std::chrono::time_point<steady_clock> textures_start = steady_clock::now();
 
-		std::lock_guard<shared_mutex> lock(m_sampler_mutex);
+		std::lock_guard lock(m_sampler_mutex);
 		void* unused = nullptr;
 		bool  update_framebuffer_sourced = false;
 
@@ -378,6 +402,7 @@ void GLGSRender::end()
 	if (!load_program())
 	{
 		// Program is not ready, skip drawing this
+		do_heap_cleanup();
 		std::this_thread::yield();
 		rsx::thread::end();
 		return;
@@ -388,17 +413,6 @@ void GLGSRender::end()
 
 	std::chrono::time_point<steady_clock> program_stop = steady_clock::now();
 	m_begin_time += (u32)std::chrono::duration_cast<std::chrono::microseconds>(program_stop - program_start).count();
-
-	if (manually_flush_ring_buffers)
-	{
-		m_attrib_ring_buffer->unmap();
-		m_index_ring_buffer->unmap();
-	}
-	else
-	{
-		//DMA push; not needed with MAP_COHERENT
-		//glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT);
-	}
 
 	//Bind textures and resolve external copy operations
 	std::chrono::time_point<steady_clock> textures_start = steady_clock::now();
@@ -471,6 +485,8 @@ void GLGSRender::end()
 
 	std::chrono::time_point<steady_clock> draw_start = steady_clock::now();
 
+	do_heap_cleanup();
+
 	if (g_cfg.video.debug_output)
 	{
 		m_program->validate();
@@ -484,8 +500,8 @@ void GLGSRender::end()
 
 	if (upload_info.index_info)
 	{
-		const GLenum index_type = std::get<0>(upload_info.index_info.value());
-		const u32 index_offset = std::get<1>(upload_info.index_info.value());
+		const GLenum index_type = std::get<0>(*upload_info.index_info);
+		const u32 index_offset = std::get<1>(*upload_info.index_info);
 		const bool restarts_valid = gl::is_primitive_native(rsx::method_registers.current_draw_clause.primitive) && !rsx::method_registers.current_draw_clause.is_disjoint_primitive;
 
 		if (gl_state.enable(restarts_valid && rsx::method_registers.restart_index_enabled(), GL_PRIMITIVE_RESTART))
@@ -593,7 +609,6 @@ void GLGSRender::end()
 	m_draw_time += (u32)std::chrono::duration_cast<std::chrono::microseconds>(draw_end - draw_start).count();
 	m_draw_calls++;
 
-	synchronize_buffers();
 	rsx::thread::end();
 }
 
@@ -633,7 +648,11 @@ void GLGSRender::on_init_thread()
 	// NOTES: All contexts have to be created before any is bound to a thread
 	// This allows context sharing to work (both GLRCs passed to wglShareLists have to be idle or you get ERROR_BUSY)
 	m_context = m_frame->make_context();
-	m_decompiler_context = m_frame->make_context();
+
+	if (!g_cfg.video.disable_asynchronous_shader_compiler)
+	{
+		m_decompiler_context = m_frame->make_context();
+	}
 
 	// Bind primary context to main RSX thread
 	m_frame->set_current(m_context);
@@ -820,7 +839,7 @@ void GLGSRender::on_init_thread()
 		GLuint handle = 0;
 		auto &query = m_occlusion_query_data[i];
 		glGenQueries(1, &handle);
-		
+
 		query.driver_handle = (u64)handle;
 		query.pending = false;
 		query.active = false;
@@ -868,7 +887,7 @@ void GLGSRender::on_init_thread()
 				type.disable_cancel = true;
 				type.progress_bar_count = 2;
 
-				dlg = fxm::get<rsx::overlays::display_manager>()->create<rsx::overlays::message_dialog>();
+				dlg = fxm::get<rsx::overlays::display_manager>()->create<rsx::overlays::message_dialog>((bool)g_cfg.video.shader_preloading_dialog.use_custom_background);
 				dlg->progress_bar_set_taskbar_index(-1);
 				dlg->show("Loading precompiled shaders from disk...", type, [](s32 status)
 				{
@@ -921,10 +940,12 @@ void GLGSRender::on_exit()
 
 	m_prog_buffer.clear();
 
-	if (draw_fbo)
+	for (auto &fbo : m_framebuffer_cache)
 	{
-		draw_fbo.remove();
+		fbo.remove();
 	}
+
+	m_framebuffer_cache.clear();
 
 	if (m_flip_fbo)
 	{
@@ -1026,9 +1047,9 @@ void GLGSRender::clear_surface(u32 arg)
 		gl_state.clear_depth(f32(clear_depth) / max_depth_value);
 		mask |= GLenum(gl::buffers::depth);
 
-		if (auto ds = std::get<1>(m_rtts.m_bound_depth_stencil))
+		if (const auto address = std::get<0>(m_rtts.m_bound_depth_stencil))
 		{
-			ds->on_write();
+			m_rtts.on_write(address);
 		}
 	}
 
@@ -1072,9 +1093,9 @@ void GLGSRender::clear_surface(u32 arg)
 
 			for (auto &rtt : m_rtts.m_bound_render_targets)
 			{
-				if (auto surface = std::get<1>(rtt))
+				if (const auto address = std::get<0>(rtt))
 				{
-					surface->on_write();
+					m_rtts.on_write(address);
 				}
 			}
 
@@ -1100,7 +1121,6 @@ bool GLGSRender::do_method(u32 cmd, u32 arg)
 			if (arg & 0x3) ctx |= rsx::framebuffer_creation_context::context_clear_depth;
 
 			init_buffers((rsx::framebuffer_creation_context)ctx, true);
-			synchronize_buffers();
 			clear_surface(arg);
 		}
 
@@ -1113,17 +1133,18 @@ bool GLGSRender::do_method(u32 cmd, u32 arg)
 		return true;
 	}
 	case NV4097_TEXTURE_READ_SEMAPHORE_RELEASE:
-	case NV4097_BACK_END_WRITE_SEMAPHORE_RELEASE:
-		flush_draw_buffers = true;
+	{
+		// Texture barrier, seemingly not very useful
 		return true;
+	}
+	case NV4097_BACK_END_WRITE_SEMAPHORE_RELEASE:
+	{
+		//flush_draw_buffers = true;
+		return true;
+	}
 	}
 
 	return false;
-}
-
-bool GLGSRender::check_program_state()
-{
-	return (rsx::method_registers.shader_program_address() != 0);
 }
 
 bool GLGSRender::load_program()
@@ -1185,7 +1206,7 @@ void GLGSRender::load_program_env(const gl::vertex_upload_info& upload_info)
 	u32 vertex_constants_offset;
 	u32 fragment_constants_offset;
 
-	const u32 fragment_constants_size = (const u32)m_prog_buffer.get_fragment_constants_buffer_size(current_fragment_program);
+	const u32 fragment_constants_size = current_fp_metadata.program_constants_buffer_length;
 	const u32 fragment_buffer_size = fragment_constants_size + (18 * 4 * sizeof(float));
 	const bool update_transform_constants = !!(m_graphics_state & rsx::pipeline_state::transform_constants_dirty);
 
@@ -1423,7 +1444,9 @@ void GLGSRender::flip(int buffer)
 	u32 buffer_height = display_buffers[buffer].height;
 	u32 buffer_pitch = display_buffers[buffer].pitch;
 
-	if ((u32)buffer < display_buffers_count && buffer_width && buffer_height && buffer_pitch)
+	if (!buffer_pitch) buffer_pitch = buffer_width * 4;
+
+	if ((u32)buffer < display_buffers_count && buffer_width && buffer_height)
 	{
 		// Calculate blit coordinates
 		coordi aspect_ratio;
@@ -1458,22 +1481,39 @@ void GLGSRender::flip(int buffer)
 
 		if (auto render_target_texture = m_rtts.get_texture_from_render_target_if_applicable(absolute_address))
 		{
-			buffer_width = render_target_texture->width();
-			buffer_height = render_target_texture->height();
+			if (render_target_texture->last_use_tag == m_rtts.write_tag)
+			{
+				image = render_target_texture->raw_handle();
+			}
+			else
+			{
+				const auto overlap_info = m_rtts.get_merged_texture_memory_region(absolute_address, buffer_width, buffer_height, buffer_pitch, 4);
+				verify(HERE), !overlap_info.empty();
 
-			image = render_target_texture->raw_handle();
+				if (overlap_info.back().surface == render_target_texture)
+				{
+					// Confirmed to be the newest data source in that range
+					image = render_target_texture->raw_handle();
+				}
+			}
+
+			if (image)
+			{
+				buffer_width = render_target_texture->width();
+				buffer_height = render_target_texture->height();
+			}
 		}
-		else if (auto surface = m_gl_texture_cache.find_texture_from_dimensions(absolute_address))
+		else if (auto surface = m_gl_texture_cache.find_texture_from_dimensions(absolute_address, buffer_width, buffer_height))
 		{
 			//Hack - this should be the first location to check for output
 			//The render might have been done offscreen or in software and a blit used to display
 			image = surface->get_raw_texture()->id();
 		}
-		else
+
+		if (!image)
 		{
 			LOG_WARNING(RSX, "Flip texture was not found in cache. Uploading surface from CPU");
 
-			if (!buffer_pitch) buffer_pitch = buffer_width * 4;
 			gl::pixel_unpack_settings unpack_settings;
 			unpack_settings.alignment(1).row_length(buffer_pitch / 4);
 
@@ -1547,7 +1587,7 @@ void GLGSRender::flip(int buffer)
 			glViewport(0, 0, m_frame->client_width(), m_frame->client_height());
 
 			// Lock to avoid modification during run-update chain
-			std::lock_guard<rsx::overlays::display_manager> lock(*m_overlay_manager);
+			std::lock_guard lock(*m_overlay_manager);
 
 			for (const auto& view : m_overlay_manager->get_views())
 			{
@@ -1561,12 +1601,12 @@ void GLGSRender::flip(int buffer)
 		gl::screen.bind();
 		glViewport(0, 0, m_frame->client_width(), m_frame->client_height());
 
-		m_text_printer.print_text(0, 0, m_frame->client_width(), m_frame->client_height(), "RSX Load: " + std::to_string(get_load()) + "%");
-		m_text_printer.print_text(0, 18, m_frame->client_width(), m_frame->client_height(), "draw calls: " + std::to_string(m_draw_calls));
-		m_text_printer.print_text(0, 36, m_frame->client_width(), m_frame->client_height(), "draw call setup: " + std::to_string(m_begin_time) + "us");
-		m_text_printer.print_text(0, 54, m_frame->client_width(), m_frame->client_height(), "vertex upload time: " + std::to_string(m_vertex_upload_time) + "us");
-		m_text_printer.print_text(0, 72, m_frame->client_width(), m_frame->client_height(), "textures upload time: " + std::to_string(m_textures_upload_time) + "us");
-		m_text_printer.print_text(0, 90, m_frame->client_width(), m_frame->client_height(), "draw call execution: " + std::to_string(m_draw_time) + "us");
+		m_text_printer.print_text(0,  0, m_frame->client_width(), m_frame->client_height(), fmt::format("RSX Load:                %3d%%", get_load()));
+		m_text_printer.print_text(0, 18, m_frame->client_width(), m_frame->client_height(), fmt::format("draw calls: %16d", m_draw_calls));
+		m_text_printer.print_text(0, 36, m_frame->client_width(), m_frame->client_height(), fmt::format("draw call setup: %11dus", m_begin_time));
+		m_text_printer.print_text(0, 54, m_frame->client_width(), m_frame->client_height(), fmt::format("vertex upload time: %8dus", m_vertex_upload_time));
+		m_text_printer.print_text(0, 72, m_frame->client_width(), m_frame->client_height(), fmt::format("textures upload time: %6dus", m_textures_upload_time));
+		m_text_printer.print_text(0, 90, m_frame->client_width(), m_frame->client_height(), fmt::format("draw call execution: %7dus", m_draw_time));
 
 		const auto num_dirty_textures = m_gl_texture_cache.get_unreleased_textures_count();
 		const auto texture_memory_size = m_gl_texture_cache.get_texture_memory_in_use() / (1024 * 1024);
@@ -1574,9 +1614,9 @@ void GLGSRender::flip(int buffer)
 		const auto num_mispredict = m_gl_texture_cache.get_num_cache_mispredictions();
 		const auto num_speculate = m_gl_texture_cache.get_num_cache_speculative_writes();
 		const auto cache_miss_ratio = (u32)ceil(m_gl_texture_cache.get_cache_miss_ratio() * 100);
-		m_text_printer.print_text(0, 126, m_frame->client_width(), m_frame->client_height(), "Unreleased textures: " + std::to_string(num_dirty_textures));
-		m_text_printer.print_text(0, 144, m_frame->client_width(), m_frame->client_height(), "Texture memory: " + std::to_string(texture_memory_size) + "M");
-		m_text_printer.print_text(0, 162, m_frame->client_width(), m_frame->client_height(), fmt::format("Flush requests: %d (%d%% hard faults, %d misprediction(s), %d speculation(s))", num_flushes, cache_miss_ratio, num_mispredict, num_speculate));
+		m_text_printer.print_text(0, 126, m_frame->client_width(), m_frame->client_height(), fmt::format("Unreleased textures: %7d", num_dirty_textures));
+		m_text_printer.print_text(0, 144, m_frame->client_width(), m_frame->client_height(), fmt::format("Texture memory: %12dM", texture_memory_size));
+		m_text_printer.print_text(0, 162, m_frame->client_width(), m_frame->client_height(), fmt::format("Flush requests: %12d  = %3d%% hard faults, %2d misprediction(s), %2d speculation(s)", num_flushes, cache_miss_ratio, num_mispredict, num_speculate));
 	}
 
 	m_frame->flip(m_context);
@@ -1584,9 +1624,17 @@ void GLGSRender::flip(int buffer)
 
 	// Cleanup
 	m_gl_texture_cache.on_frame_end();
-
-	m_rtts.free_invalidated();
 	m_vertex_cache->purge();
+
+	auto removed_textures = m_rtts.free_invalidated();
+	m_framebuffer_cache.remove_if([&](auto& fbo)
+	{
+		if (fbo.deref_count >= 2) return true; // Remove if stale
+		if (fbo.references_any(removed_textures)) return true; // Remove if any of the attachments is invalid
+
+		fbo.deref_count++;
+		return false;
+	});
 
 	//If we are skipping the next frame, do not reset perf counters
 	if (skip_frame) return;
@@ -1600,14 +1648,17 @@ void GLGSRender::flip(int buffer)
 
 bool GLGSRender::on_access_violation(u32 address, bool is_writing)
 {
-	bool can_flush = (std::this_thread::get_id() == m_thread_id);
-	auto result = m_gl_texture_cache.invalidate_address(address, is_writing, can_flush);
+	const bool can_flush = (std::this_thread::get_id() == m_thread_id);
+	const rsx::invalidation_cause cause =
+		is_writing ? (can_flush ? rsx::invalidation_cause::write : rsx::invalidation_cause::deferred_write)
+		           : (can_flush ? rsx::invalidation_cause::read  : rsx::invalidation_cause::deferred_read);
+	auto result = m_gl_texture_cache.invalidate_address(address, cause);
 
 	if (!result.violation_handled)
 		return false;
 
 	{
-		std::lock_guard<shared_mutex> lock(m_sampler_mutex);
+		std::lock_guard lock(m_sampler_mutex);
 		m_samplers_dirty.store(true);
 	}
 
@@ -1624,14 +1675,17 @@ bool GLGSRender::on_access_violation(u32 address, bool is_writing)
 	return true;
 }
 
-void GLGSRender::on_invalidate_memory_range(u32 address_base, u32 size)
+void GLGSRender::on_invalidate_memory_range(const utils::address_range &range)
 {
 	//Discard all memory in that range without bothering with writeback (Force it for strict?)
-	if (m_gl_texture_cache.invalidate_range(address_base, size, true, true, false).violation_handled)
+	auto data = std::move(m_gl_texture_cache.invalidate_range(range, rsx::invalidation_cause::unmap));
+	AUDIT(data.empty());
+
+	if (data.violation_handled)
 	{
-		m_gl_texture_cache.purge_dirty();
+		m_gl_texture_cache.purge_unreleased_sections();
 		{
-			std::lock_guard<shared_mutex> lock(m_sampler_mutex);
+			std::lock_guard lock(m_sampler_mutex);
 			m_samplers_dirty.store(true);
 		}
 	}
@@ -1641,7 +1695,7 @@ void GLGSRender::do_local_task(rsx::FIFO_state state)
 {
 	if (!work_queue.empty())
 	{
-		std::lock_guard<shared_mutex> lock(queue_guard);
+		std::lock_guard lock(queue_guard);
 
 		work_queue.remove_if([](work_item &q) { return q.received; });
 
@@ -1676,9 +1730,8 @@ void GLGSRender::do_local_task(rsx::FIFO_state state)
 
 	if (m_overlay_manager)
 	{
-		if (!in_begin_end && native_ui_flip_request.load())
+		if (!in_begin_end && async_flip_requested & flip_request::native_ui)
 		{
-			native_ui_flip_request.store(false);
 			flip((s32)current_display_buffer);
 		}
 	}
@@ -1686,22 +1739,12 @@ void GLGSRender::do_local_task(rsx::FIFO_state state)
 
 work_item& GLGSRender::post_flush_request(u32 address, gl::texture_cache::thrashed_set& flush_data)
 {
-	std::lock_guard<shared_mutex> lock(queue_guard);
+	std::lock_guard lock(queue_guard);
 
-	work_queue.emplace_back();
-	work_item &result = work_queue.back();
+	work_item &result = work_queue.emplace_back();
 	result.address_to_flush = address;
 	result.section_data = std::move(flush_data);
 	return result;
-}
-
-void GLGSRender::synchronize_buffers()
-{
-	if (flush_draw_buffers)
-	{
-		write_buffers();
-		flush_draw_buffers = false;
-	}
 }
 
 bool GLGSRender::scaled_image_from_memory(rsx::blit_src_info& src, rsx::blit_dst_info& dst, bool interpolate)
@@ -1723,7 +1766,7 @@ void GLGSRender::notify_tile_unbound(u32 tile)
 	//m_rtts.invalidate_surface_address(addr, false);
 
 	{
-		std::lock_guard<shared_mutex> lock(m_sampler_mutex);
+		std::lock_guard lock(m_sampler_mutex);
 		m_samplers_dirty.store(true);
 	}
 }

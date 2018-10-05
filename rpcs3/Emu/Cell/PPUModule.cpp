@@ -536,7 +536,7 @@ static auto ppu_load_exports(const std::shared_ptr<ppu_linkage_info>& link, u32 
 				// Static function
 				const auto _sf = _sm && _sm->functions.count(fnid) ? &_sm->functions.at(fnid) : nullptr;
 
-				if (_sf && (_sf->flags & MFF_FORCED_HLE) && g_cfg.core.hook_functions)
+				if (_sf && (_sf->flags & MFF_FORCED_HLE))
 				{
 					// Inject a branch to the HLE implementation
 					const u32 _entry = vm::read32(faddr);
@@ -1167,7 +1167,7 @@ void ppu_load_exec(const ppu_exec_object& elf)
 
 				if (info.size < sizeof(process_param_t))
 				{
-					LOG_WARNING(LOADER, "Bad process_param size! [0x%x : 0x%x]", info.size, SIZE_32(process_param_t));
+					LOG_WARNING(LOADER, "Bad process_param size! [0x%x : 0x%x]", info.size, sizeof(process_param_t));
 				}
 
 				if (info.magic != 0x13bcc5f6)
@@ -1436,7 +1436,7 @@ void ppu_load_exec(const ppu_exec_object& elf)
 	g_ps3_sdk_version = sdk_version;
 
 	// Initialize process arguments
-	auto args = vm::ptr<u64>::make(vm::alloc(SIZE_32(u64) * (::size32(Emu.argv) + ::size32(Emu.envp) + 2), vm::main));
+	auto args = vm::ptr<u64>::make(vm::alloc(u32{sizeof(u64)} * (::size32(Emu.argv) + ::size32(Emu.envp) + 2), vm::main));
 	auto argv = args;
 
 	for (const auto& arg : Emu.argv)

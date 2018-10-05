@@ -6,10 +6,13 @@
 #include "Utilities/sysinfo.h"
 #include "Utilities/Thread.h"
 #include "rpcs3_version.h"
+#include <cstring>
+#include <cstdarg>
 #include <string>
 #include <unordered_map>
 #include <thread>
 #include <chrono>
+#include <cstring>
 
 using namespace std::literals::chrono_literals;
 
@@ -187,7 +190,7 @@ namespace logs
 
 	void reset()
 	{
-		semaphore_lock lock(g_mutex);
+		std::lock_guard lock(g_mutex);
 
 		for (auto&& pair : get_logger()->channels)
 		{
@@ -197,7 +200,7 @@ namespace logs
 
 	void set_level(const std::string& ch_name, level value)
 	{
-		semaphore_lock lock(g_mutex);
+		std::lock_guard lock(g_mutex);
 
 		get_logger()->channels[ch_name].set_level(value);
 	}
@@ -207,7 +210,7 @@ namespace logs
 	{
 		if (!g_init)
 		{
-			semaphore_lock lock(g_mutex);
+			std::lock_guard lock(g_mutex);
 			get_logger()->messages.clear();
 			g_init = true;
 		}
@@ -223,7 +226,7 @@ void logs::listener::add(logs::listener* _new)
 	// Get first (main) listener
 	listener* lis = get_logger();
 
-	semaphore_lock lock(g_mutex);
+	std::lock_guard lock(g_mutex);
 
 	// Install new listener at the end of linked list
 	while (lis->m_next || !lis->m_next.compare_and_swap_test(nullptr, _new))
@@ -238,7 +241,7 @@ void logs::listener::add(logs::listener* _new)
 	}
 }
 
-void logs::message::broadcast(const char* fmt, const fmt_type_info* sup, const u64* args)
+void logs::message::broadcast(const char* fmt, const fmt_type_info* sup, ...) const
 {
 	// Get timestamp
 	const u64 stamp = get_stamp();
@@ -246,7 +249,7 @@ void logs::message::broadcast(const char* fmt, const fmt_type_info* sup, const u
 	// Register channel
 	if (ch->enabled == level::_uninit)
 	{
-		semaphore_lock lock(g_mutex);
+		std::lock_guard lock(g_mutex);
 
 		auto& info = get_logger()->channels[ch->name];
 
@@ -267,9 +270,23 @@ void logs::message::broadcast(const char* fmt, const fmt_type_info* sup, const u
 		}
 	}
 
-	// Get text
-	thread_local std::string text; text.clear();
-	fmt::raw_append(text, fmt, sup, args);
+	// Get text, extract va_args
+	thread_local std::string text;
+	thread_local std::vector<u64> args;
+
+	std::size_t args_count = 0;
+	for (auto v = sup; v->fmt_string; v++)
+		args_count++;
+
+	text.clear();
+	args.resize(args_count);
+
+	va_list c_args;
+	va_start(c_args, sup);
+	for (u64& arg : args)
+		arg = va_arg(c_args, u64);
+	va_end(c_args);
+	fmt::raw_append(text, fmt, sup, args.data());
 	std::string prefix = g_tls_log_prefix();
 
 	// Get first (main) listener
@@ -277,7 +294,7 @@ void logs::message::broadcast(const char* fmt, const fmt_type_info* sup, const u
 
 	if (!g_init)
 	{
-		semaphore_lock lock(g_mutex);
+		std::lock_guard lock(g_mutex);
 
 		if (!g_init)
 		{
@@ -467,7 +484,7 @@ logs::file_writer::~file_writer()
 
 bool logs::file_writer::flush(u64 bufv)
 {
-	semaphore_lock lock(m_m);
+	std::lock_guard lock(m_m);
 
 	const u64 st  = +m_out;
 	const u64 end = std::min<u64>((st + s_log_size) & ~(s_log_size - 1), bufv >> 24);

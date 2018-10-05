@@ -6,13 +6,13 @@
 #include "Utilities/VirtualMemory.h"
 
 class shared_mutex;
-class named_thread;
 class cpu_thread;
 class notifier;
 
 namespace vm
 {
 	extern u8* const g_base_addr;
+	extern u8* const g_sudo_addr;
 	extern u8* const g_exec_addr;
 	extern u8* const g_stat_addr;
 	extern u8* const g_reservations;
@@ -21,9 +21,11 @@ namespace vm
 	enum memory_location_t : uint
 	{
 		main,
-		user_space,
+		user64k,
+		user1m,
 		video,
 		stack,
+		spu,
 
 		memory_location_max,
 		any = 0xffffffff,
@@ -63,15 +65,17 @@ namespace vm
 	void temporary_unlock(cpu_thread& cpu) noexcept;
 	void temporary_unlock() noexcept;
 
-	struct reader_lock final
+	class reader_lock final
 	{
-		const bool locked;
+		bool m_upgraded = false;
 
+	public:
 		reader_lock(const reader_lock&) = delete;
+		reader_lock& operator=(const reader_lock&) = delete;
 		reader_lock();
 		~reader_lock();
 
-		explicit operator bool() const { return locked; }
+		void upgrade();
 	};
 
 	struct writer_lock final
@@ -79,6 +83,7 @@ namespace vm
 		const bool locked;
 
 		writer_lock(const writer_lock&) = delete;
+		writer_lock& operator=(const writer_lock&) = delete;
 		writer_lock(int full);
 		~writer_lock();
 
@@ -143,7 +148,10 @@ namespace vm
 		// Mapped regions: addr -> shm handle
 		std::map<u32, std::shared_ptr<utils::shm>> m_map;
 
-		bool try_alloc(u32 addr, u8 flags, std::shared_ptr<utils::shm>&&);
+		// Common mapped region for special cases
+		std::shared_ptr<utils::shm> m_common;
+
+		bool try_alloc(u32 addr, u8 flags, u32 size, std::shared_ptr<utils::shm>&&);
 
 	public:
 		block_t(u32 addr, u32 size, u64 flags = 0);
@@ -176,6 +184,9 @@ namespace vm
 
 	// Create new memory block with specified parameters and return it
 	std::shared_ptr<block_t> map(u32 addr, u32 size, u64 flags = 0);
+
+	// Create new memory block with at arbitrary position with specified alignment
+	std::shared_ptr<block_t> find_map(u32 size, u32 align, u64 flags = 0);
 
 	// Delete existing memory block with specified start address, return it
 	std::shared_ptr<block_t> unmap(u32 addr, bool must_be_empty = false);
@@ -293,32 +304,10 @@ namespace vm
 		}
 
 		// Access memory bypassing memory protection
-		template <typename T>
-		inline std::shared_ptr<to_be_t<T>> get_super_ptr(u32 addr, u32 count = 1)
+		template <typename T = u8>
+		inline to_be_t<T>* get_super_ptr(u32 addr)
 		{
-			const auto area = vm::get(vm::any, addr);
-
-			if (!area || addr + u64{count} * sizeof(T) > UINT32_MAX)
-			{
-				return nullptr;
-			}
-
-			const auto shm = area->get(addr, sizeof(T) * count);
-
-			if (!shm.second || shm.first > addr)
-			{
-				return nullptr;
-			}
-
-			const auto ptr = reinterpret_cast<to_be_t<T>*>(shm.second->get(addr - shm.first, sizeof(T) * count));
-
-			if (!ptr)
-			{
-				return nullptr;
-			}
-
-			// Create a shared pointer using the aliasing constructor
-			return {shm.second, ptr};
+			return reinterpret_cast<to_be_t<T>*>(g_sudo_addr + addr);
 		}
 
 		inline const be_t<u16>& read16(u32 addr)

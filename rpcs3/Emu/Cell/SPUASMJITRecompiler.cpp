@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "Emu/Memory/Memory.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "Emu/IdManager.h"
 
@@ -7,6 +7,7 @@
 #include "SPUThread.h"
 #include "SPUInterpreter.h"
 #include "Utilities/sysinfo.h"
+#include "Utilities/asm.h"
 #include "PPUAnalyser.h"
 
 #include <cmath>
@@ -83,7 +84,7 @@ spu_function_t spu_recompiler::compile(std::vector<u32>&& func_rv)
 	init();
 
 	// Don't lock without shared runtime
-	std::unique_lock<shared_mutex> lock(m_spurt->m_mutex, std::defer_lock);
+	std::unique_lock lock(m_spurt->m_mutex, std::defer_lock);
 
 	if (g_cfg.core.spu_shared_runtime)
 	{
@@ -630,7 +631,7 @@ spu_function_t spu_recompiler::compile(std::vector<u32>&& func_rv)
 			}
 
 			// Determine which value will be duplicated at hole positions
-			const u32 w3 = func.at((j - start + ~::cntlz32(cmask, true) % 4 * 4) / 4 + 1);
+			const u32 w3 = func.at((j - start + ~utils::cntlz32(cmask, true) % 4 * 4) / 4 + 1);
 			words.push_back(cmask & 1 ? func[(j - start + 0) / 4 + 1] : w3);
 			words.push_back(cmask & 2 ? func[(j - start + 4) / 4 + 1] : w3);
 			words.push_back(cmask & 4 ? func[(j - start + 8) / 4 + 1] : w3);
@@ -1183,7 +1184,7 @@ static void check_state_ret(SPUThread& _spu, void*, u8*)
 
 static void check_state(SPUThread* _spu, spu_function_t _ret)
 {
-	if (test(_spu->state) && _spu->check_state())
+	if (_spu->state && _spu->check_state())
 	{
 		_ret = &check_state_ret;
 	}
@@ -3413,7 +3414,7 @@ void spu_recompiler::ROTQBYI(spu_opcode_t op)
 	}
 	else if (s == 4 || s == 8 || s == 12)
 	{
-		c->pshufd(va, va, ::rol8(0xE4, s / 2));
+		c->pshufd(va, va, utils::rol8(0xE4, s / 2));
 	}
 	else if (utils::has_ssse3())
 	{

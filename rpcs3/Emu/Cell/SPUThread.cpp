@@ -1,8 +1,7 @@
 #include "stdafx.h"
 #include "Utilities/JIT.h"
-#include "Utilities/lockless.h"
 #include "Utilities/sysinfo.h"
-#include "Emu/Memory/Memory.h"
+#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 
 #include "Emu/IdManager.h"
@@ -365,7 +364,7 @@ spu_imm_table_t::scale_table_t::scale_table_t()
 
 spu_imm_table_t::spu_imm_table_t()
 {
-	for (u32 i = 0; i < sizeof(sldq_pshufb) / sizeof(sldq_pshufb[0]); i++)
+	for (u32 i = 0; i < std::size(sldq_pshufb); i++)
 	{
 		for (u32 j = 0; j < 16; j++)
 		{
@@ -373,7 +372,7 @@ spu_imm_table_t::spu_imm_table_t()
 		}
 	}
 
-	for (u32 i = 0; i < sizeof(srdq_pshufb) / sizeof(srdq_pshufb[0]); i++)
+	for (u32 i = 0; i < std::size(srdq_pshufb); i++)
 	{
 		const u32 im = (0u - i) & 0x1f;
 
@@ -383,7 +382,7 @@ spu_imm_table_t::spu_imm_table_t()
 		}
 	}
 
-	for (u32 i = 0; i < sizeof(rldq_pshufb) / sizeof(rldq_pshufb[0]); i++)
+	for (u32 i = 0; i < std::size(rldq_pshufb); i++)
 	{
 		for (u32 j = 0; j < 16; j++)
 		{
@@ -521,7 +520,7 @@ void SPUThread::cpu_task()
 
 	if (jit)
 	{
-		while (LIKELY(!test(state) || !check_state()))
+		while (LIKELY(!state || !check_state()))
 		{
 			jit_dispatcher[pc / 4](*this, vm::_ptr<u8>(offset), nullptr);
 		}
@@ -547,7 +546,7 @@ void SPUThread::cpu_task()
 
 	while (true)
 	{
-		if (UNLIKELY(test(state)))
+		if (UNLIKELY(state))
 		{
 			if (check_state()) return;
 
@@ -594,7 +593,7 @@ void SPUThread::cpu_task()
 						func2 = func4;
 						func3 = func5;
 
-						if (UNLIKELY(test(state)))
+						if (UNLIKELY(state))
 						{
 							break;
 						}
@@ -716,7 +715,7 @@ void SPUThread::do_dma_transfer(const spu_mfc_cmd& args)
 		{
 			fmt::throw_exception("SPU MMIO used for RawSPU (cmd=0x%x, lsa=0x%x, ea=0x%llx, tag=0x%x, size=0x%x)" HERE, args.cmd, args.lsa, args.eal, args.tag, args.size);
 		}
-		else if (group && index < group->num && group->threads[index])
+		else if (group && group->threads[index])
 		{
 			auto& spu = static_cast<SPUThread&>(*group->threads[index]);
 
@@ -1093,7 +1092,7 @@ void SPUThread::do_mfc(bool wait)
 
 		if (args.cmd & MFC_LIST_MASK)
 		{
-			if (!test(ch_stall_mask, mask))
+			if (!(ch_stall_mask & mask))
 			{
 				if (do_list_transfer(args))
 				{
@@ -1160,7 +1159,7 @@ bool SPUThread::process_mfc_cmd(spu_mfc_cmd args)
 	// Stall infinitely if MFC queue is full
 	while (UNLIKELY(mfc_size >= 16))
 	{
-		if (test(state, cpu_flag::stop))
+		if (state & cpu_flag::stop)
 		{
 			return false;
 		}
@@ -1193,7 +1192,7 @@ bool SPUThread::process_mfc_cmd(spu_mfc_cmd args)
 
 			while (rdata == data && vm::reservation_acquire(raddr, 128) == rtime)
 			{
-				if (test(state, cpu_flag::stop))
+				if (state & cpu_flag::stop)
 				{
 					break;
 				}
@@ -1400,7 +1399,7 @@ bool SPUThread::process_mfc_cmd(spu_mfc_cmd args)
 	{
 		if (LIKELY(args.size <= 0x4000))
 		{
-			if (LIKELY(do_dma_check(args) && !test(ch_stall_mask, 1u << args.tag)))
+			if (LIKELY(do_dma_check(args) && !(ch_stall_mask & 1u << args.tag)))
 			{
 				if (LIKELY(do_list_transfer(args)))
 				{
@@ -1558,7 +1557,7 @@ s64 SPUThread::get_ch_value(u32 ch)
 
 		while (!channel.try_pop(out))
 		{
-			if (test(state, cpu_flag::stop))
+			if (state & cpu_flag::stop)
 			{
 				return -1;
 			}
@@ -1596,7 +1595,7 @@ s64 SPUThread::get_ch_value(u32 ch)
 				return out;
 			}
 
-			if (test(state & cpu_flag::stop))
+			if (state & cpu_flag::stop)
 			{
 				return -1;
 			}
@@ -1694,13 +1693,13 @@ s64 SPUThread::get_ch_value(u32 ch)
 				fmt::throw_exception("Not supported: event mask 0x%x" HERE, mask1);
 			}
 
-			std::shared_lock<notifier> pseudo_lock(vm::reservation_notifier(raddr, 128), std::try_to_lock);
+			std::shared_lock pseudo_lock(vm::reservation_notifier(raddr, 128), std::try_to_lock);
 
 			verify(HERE), pseudo_lock;
 
 			while (res = get_events(), !res)
 			{
-				if (test(state, cpu_flag::stop + cpu_flag::dbg_global_stop))
+				if (state & (cpu_flag::stop + cpu_flag::dbg_global_stop))
 				{
 					return -1;
 				}
@@ -1713,7 +1712,7 @@ s64 SPUThread::get_ch_value(u32 ch)
 
 		while (res = get_events(true), !res)
 		{
-			if (test(state & cpu_flag::stop))
+			if (state & cpu_flag::stop)
 			{
 				return -1;
 			}
@@ -1753,7 +1752,7 @@ bool SPUThread::set_ch_value(u32 ch, u32 value)
 		{
 			while (!ch_out_intr_mbox.try_push(value))
 			{
-				if (test(state & cpu_flag::stop))
+				if (state & cpu_flag::stop)
 				{
 					return false;
 				}
@@ -1786,7 +1785,7 @@ bool SPUThread::set_ch_value(u32 ch, u32 value)
 
 				LOG_TRACE(SPU, "sys_spu_thread_send_event(spup=%d, data0=0x%x, data1=0x%x)", spup, value & 0x00ffffff, data);
 
-				const auto queue = (semaphore_lock{group->mutex}, this->spup[spup].lock());
+				const auto queue = (std::lock_guard{group->mutex}, this->spup[spup].lock());
 
 				if (!queue)
 				{
@@ -1818,7 +1817,7 @@ bool SPUThread::set_ch_value(u32 ch, u32 value)
 
 				LOG_TRACE(SPU, "sys_spu_thread_throw_event(spup=%d, data0=0x%x, data1=0x%x)", spup, value & 0x00ffffff, data);
 
-				const auto queue = (semaphore_lock{group->mutex}, this->spup[spup].lock());
+				const auto queue = (std::lock_guard{group->mutex}, this->spup[spup].lock());
 
 				if (!queue)
 				{
@@ -1899,7 +1898,7 @@ bool SPUThread::set_ch_value(u32 ch, u32 value)
 	{
 		while (!ch_out_mbox.try_push(value))
 		{
-			if (test(state & cpu_flag::stop))
+			if (state & cpu_flag::stop)
 			{
 				return false;
 			}
@@ -2005,8 +2004,11 @@ bool SPUThread::set_ch_value(u32 ch, u32 value)
 	case MFC_WrListStallAck:
 	{
 		// Reset stall status for specified tag
-		if (::test_and_reset(ch_stall_mask, 1u << value))
+		const u32 tag_mask = 1u << value;
+
+		if (ch_stall_mask & tag_mask)
 		{
+			ch_stall_mask &= ~tag_mask;
 			do_mfc(true);
 		}
 
@@ -2085,7 +2087,7 @@ bool SPUThread::stop_and_signal(u32 code)
 		// HACK: wait for executable code
 		while (!_ref<u32>(pc))
 		{
-			if (test(state & cpu_flag::stop))
+			if (state & cpu_flag::stop)
 			{
 				return false;
 			}
@@ -2141,7 +2143,7 @@ bool SPUThread::stop_and_signal(u32 code)
 			// Check group status, wait if necessary
 			while (group->run_state >= SPU_THREAD_GROUP_STATUS_WAITING && group->run_state <= SPU_THREAD_GROUP_STATUS_SUSPENDED)
 			{
-				if (test(state & cpu_flag::stop))
+				if (state & cpu_flag::stop)
 				{
 					return false;
 				}
@@ -2151,7 +2153,7 @@ bool SPUThread::stop_and_signal(u32 code)
 
 			reader_lock rlock(id_manager::g_mutex);
 
-			semaphore_lock lock(group->mutex);
+			std::lock_guard lock(group->mutex);
 
 			if (group->run_state >= SPU_THREAD_GROUP_STATUS_WAITING && group->run_state <= SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
 			{
@@ -2177,7 +2179,7 @@ bool SPUThread::stop_and_signal(u32 code)
 				return ch_in_mbox.set_values(1, CELL_EINVAL), true; // TODO: check error value
 			}
 
-			semaphore_lock qlock(queue->mutex);
+			std::lock_guard qlock(queue->mutex);
 
 			if (queue->events.empty())
 			{
@@ -2210,7 +2212,7 @@ bool SPUThread::stop_and_signal(u32 code)
 
 		while (true)
 		{
-			if (test(state & cpu_flag::stop))
+			if (state & cpu_flag::stop)
 			{
 				return false;
 			}
@@ -2225,7 +2227,7 @@ bool SPUThread::stop_and_signal(u32 code)
 			}
 		}
 
-		semaphore_lock lock(group->mutex);
+		std::lock_guard lock(group->mutex);
 
 		if (group->run_state == SPU_THREAD_GROUP_STATUS_WAITING)
 		{
@@ -2276,7 +2278,7 @@ bool SPUThread::stop_and_signal(u32 code)
 
 		LOG_TRACE(SPU, "sys_spu_thread_group_exit(status=0x%x)", value);
 
-		semaphore_lock lock(group->mutex);
+		std::lock_guard lock(group->mutex);
 
 		for (auto& thread : group->threads)
 		{
@@ -2307,7 +2309,7 @@ bool SPUThread::stop_and_signal(u32 code)
 
 		LOG_TRACE(SPU, "sys_spu_thread_exit(status=0x%x)", ch_out_mbox.get_value());
 
-		semaphore_lock lock(group->mutex);
+		std::lock_guard lock(group->mutex);
 
 		status |= SPU_STATUS_STOPPED_BY_STOP;
 		group->cv.notify_one();

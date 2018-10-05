@@ -22,7 +22,7 @@ extern "C"
 
 std::mutex g_mutex_avcodec_open2;
 
-logs::channel cellVdec("cellVdec");
+LOG_CHANNEL(cellVdec);
 
 vm::gvar<s32> _cell_vdec_prx_ver; // ???
 
@@ -134,7 +134,7 @@ struct vdec_thread : ppu_thread
 		AVDictionary* opts{};
 		av_dict_set(&opts, "refcounted_frames", "1", 0);
 
-		std::lock_guard<std::mutex> lock(g_mutex_avcodec_open2);
+		std::lock_guard lock(g_mutex_avcodec_open2);
 
 		int err = avcodec_open2(ctx, codec, &opts);
 		if (err || opts)
@@ -345,7 +345,7 @@ struct vdec_thread : ppu_thread
 								// Hack
 								cellVdec.error("Unsupported time_base.num (%d/%d, tpf=%d)", ctx->time_base.den, ctx->time_base.num, ctx->ticks_per_frame);
 								amend = u64{90000} / 30;
-								frame.frc = CELL_VDEC_FRC_30;			
+								frame.frc = CELL_VDEC_FRC_30;
 							}
 
 							next_pts += amend;
@@ -354,7 +354,7 @@ struct vdec_thread : ppu_thread
 
 						cellVdec.trace("Got picture (pts=0x%llx[0x%llx], dts=0x%llx[0x%llx])", frame.pts, frame->pkt_pts, frame.dts, frame->pkt_dts);
 
-						std::lock_guard<std::mutex>{mutex}, out.push(std::move(frame));
+						std::lock_guard{mutex}, out.push(std::move(frame));
 
 						cb_func(*this, id, CELL_VDEC_MSG_TYPE_PICOUT, CELL_OK, cb_arg);
 						lv2_obj::sleep(*this);
@@ -377,7 +377,7 @@ struct vdec_thread : ppu_thread
 					au_count--;
 				}
 
-				while (std::lock_guard<std::mutex>{mutex}, max_frames && out.size() > max_frames)
+				while (std::lock_guard{mutex}, max_frames && out.size() > max_frames)
 				{
 					thread_ctrl::wait();
 				}
@@ -494,16 +494,15 @@ s32 cellVdecClose(ppu_thread& ppu, u32 handle)
 	lv2_obj::sleep(ppu);
 
 	{
-		std::lock_guard<std::mutex> lock(vdec->mutex);
+		std::lock_guard lock(vdec->mutex);
 		vdec->cmd_push({vdec_cmd::close, 0});
 		vdec->max_frames = 0;
 	}
 
 	vdec->notify();
 	vdec->join();
-	idm::remove<ppu_thread>(handle);
-
 	CALL_FUNC(ppu, sys_interrupt_thread_disestablish, ppu, vdec->ppu_tid);
+	idm::remove<ppu_thread>(handle);
 	return CELL_OK;
 }
 
@@ -583,7 +582,7 @@ s32 cellVdecGetPicture(u32 handle, vm::cptr<CellVdecPicFormat> format, vm::ptr<u
 
 	vdec_frame frame;
 	{
-		std::lock_guard<std::mutex> lock(vdec->mutex);
+		std::lock_guard lock(vdec->mutex);
 
 		if (vdec->out.empty())
 		{
@@ -713,7 +712,7 @@ s32 cellVdecGetPicItem(u32 handle, vm::pptr<CellVdecPicItem> picItem)
 	u64 usrd;
 	u32 frc;
 	{
-		std::lock_guard<std::mutex> lock(vdec->mutex);
+		std::lock_guard lock(vdec->mutex);
 
 		if (vdec->out.empty())
 		{
@@ -751,11 +750,11 @@ s32 cellVdecGetPicItem(u32 handle, vm::pptr<CellVdecPicItem> picItem)
 	info->auUserData[1] = 0;
 	info->status = CELL_OK;
 	info->attr = CELL_VDEC_PICITEM_ATTR_NORMAL;
-	info->picInfo_addr = info.addr() + SIZE_32(CellVdecPicItem);
+	info->picInfo_addr = info.addr() + u32{sizeof(CellVdecPicItem)};
 
 	if (vdec->type == CELL_VDEC_CODEC_TYPE_AVC)
 	{
-		const vm::ptr<CellVdecAvcInfo> avc = vm::cast(info.addr() + SIZE_32(CellVdecPicItem));
+		const vm::ptr<CellVdecAvcInfo> avc = vm::cast(info.addr() + u32{sizeof(CellVdecPicItem)});
 
 		avc->horizontalSize = frame->width;
 		avc->verticalSize = frame->height;
@@ -811,7 +810,7 @@ s32 cellVdecGetPicItem(u32 handle, vm::pptr<CellVdecPicItem> picItem)
 	}
 	else if (vdec->type == CELL_VDEC_CODEC_TYPE_DIVX)
 	{
-		const vm::ptr<CellVdecDivxInfo> dvx = vm::cast(info.addr() + SIZE_32(CellVdecPicItem));
+		const vm::ptr<CellVdecDivxInfo> dvx = vm::cast(info.addr() + u32{sizeof(CellVdecPicItem)});
 
 		switch (s32 pct = frame->pict_type)
 		{
@@ -847,7 +846,7 @@ s32 cellVdecGetPicItem(u32 handle, vm::pptr<CellVdecPicItem> picItem)
 	}
 	else if (vdec->type == CELL_VDEC_CODEC_TYPE_MPEG2)
 	{
-		const vm::ptr<CellVdecMpeg2Info> mp2 = vm::cast(info.addr() + SIZE_32(CellVdecPicItem));
+		const vm::ptr<CellVdecMpeg2Info> mp2 = vm::cast(info.addr() + u32{sizeof(CellVdecPicItem)});
 
 		std::memset(mp2.get_ptr(), 0, sizeof(CellVdecMpeg2Info));
 		mp2->horizontal_size = frame->width;

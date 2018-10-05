@@ -58,13 +58,8 @@ namespace vk
 		{
 			if (!m_vao.heap)
 			{
-				auto memory_types = vk::get_memory_mapping(m_device->gpu());
-
-				m_vao.init(1 * 0x100000, "overlays VAO", 128);
-				m_vao.heap = std::make_unique<vk::buffer>(*m_device, 1 * 0x100000, memory_types.host_visible_coherent, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0);
-
-				m_ubo.init(8 * 0x100000, "overlays UBO", 128);
-				m_ubo.heap = std::make_unique<vk::buffer>(*m_device, 8 * 0x100000, memory_types.host_visible_coherent, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 0);
+				m_vao.create(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 1 * 0x100000, "overlays VAO", 128);
+				m_ubo.create(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 8 * 0x100000, "overlays UBO", 128);
 			}
 		}
 
@@ -442,11 +437,13 @@ namespace vk
 	struct ui_overlay_renderer : public overlay_pass
 	{
 		f32 m_time = 0.f;
+		f32 m_blur_strength = 0.f;
 		color4f m_scale_offset;
 		color4f m_color;
 		bool m_pulse_glow = false;
 		bool m_skip_texture_read = false;
 		bool m_clip_enabled;
+		int  m_texture_type;
 		areaf m_clip_region;
 
 		std::vector<std::unique_ptr<vk::image>> resources;
@@ -467,12 +464,14 @@ namespace vk
 				"layout(location=1) out vec4 color;\n"
 				"layout(location=2) out vec4 parameters;\n"
 				"layout(location=3) out vec4 clip_rect;\n"
+				"layout(location=4) out vec4 parameters2;\n"
 				"\n"
 				"void main()\n"
 				"{\n"
 				"	tc0.xy = in_pos.zw;\n"
 				"	color = regs[1];\n"
 				"	parameters = regs[2];\n"
+				"	parameters2 = regs[4];\n"
 				"	clip_rect = regs[3] * regs[0].zwzw;\n"
 				"	vec4 pos = vec4((in_pos.xy * regs[0].zw) / regs[0].xy, 0.5, 1.);\n"
 				"	gl_Position = (pos + pos) - 1.;\n"
@@ -488,7 +487,57 @@ namespace vk
 				"layout(location=1) in vec4 color;\n"
 				"layout(location=2) in vec4 parameters;\n"
 				"layout(location=3) in vec4 clip_rect;\n"
+				"layout(location=4) in vec4 parameters2;\n"
 				"layout(location=0) out vec4 ocol;\n"
+				"\n"
+				"vec4 blur_sample(sampler2D tex, vec2 coord, vec2 tex_offset)\n"
+				"{\n"
+				"	vec2 coords[9];\n"
+				"	coords[0] = coord - tex_offset\n;"
+				"	coords[1] = coord + vec2(0., -tex_offset.y);\n"
+				"	coords[2] = coord + vec2(tex_offset.x, -tex_offset.y);\n"
+				"	coords[3] = coord + vec2(-tex_offset.x, 0.);\n"
+				"	coords[4] = coord;\n"
+				"	coords[5] = coord + vec2(tex_offset.x, 0.);\n"
+				"	coords[6] = coord + vec2(-tex_offset.x, tex_offset.y);\n"
+				"	coords[7] = coord + vec2(0., tex_offset.y);\n"
+				"	coords[8] = coord + tex_offset;\n"
+				"\n"
+				"	float weights[9] =\n"
+				"	{\n"
+				"		1., 2., 1.,\n"
+				"		2., 4., 2.,\n"
+				"		1., 2., 1.\n"
+				"	};\n"
+				"\n"
+				"	vec4 blurred = vec4(0.);\n"
+				"	for (int n = 0; n < 9; ++n)\n"
+				"	{\n"
+				"		blurred += texture(tex, coords[n]) * weights[n];\n"
+				"	}\n"
+				"\n"
+				"	return blurred / 16.f;\n"
+				"}\n"
+				"\n"
+				"vec4 sample_image(sampler2D tex, vec2 coord, float blur_strength)\n"
+				"{\n"
+				"	vec4 original = texture(tex, coord);\n"
+				"	if (blur_strength == 0) return original;\n"
+				"	\n"
+				"	vec2 constraints = 1.f / vec2(640, 360);\n"
+				"	vec2 res_offset = 1.f / textureSize(fs0, 0);\n"
+				"	vec2 tex_offset = max(res_offset, constraints);\n"
+				"\n"
+				"	// Sample triangle pattern and average\n"
+				"	// TODO: Nicer looking gaussian blur with less sampling\n"
+				"	vec4 blur0 = blur_sample(tex, coord + vec2(-res_offset.x, 0.), tex_offset);\n"
+				"	vec4 blur1 = blur_sample(tex, coord + vec2(res_offset.x, 0.), tex_offset);\n"
+				"	vec4 blur2 = blur_sample(tex, coord + vec2(0., res_offset.y), tex_offset);\n"
+				"\n"
+				"	vec4 blurred = blur0 + blur1 + blur2;\n"
+				"	blurred /= 3.;\n"
+				"	return mix(original, blurred, blur_strength);\n"
+				"}\n"
 				"\n"
 				"void main()\n"
 				"{\n"
@@ -506,10 +555,12 @@ namespace vk
 				"	if (parameters.y != 0)\n"
 				"		diff_color.a *= (sin(parameters.x) + 1.f) * 0.5f;\n"
 				"\n"
-				"	if (parameters.z != 0)\n"
-				"		ocol = texture(fs0, tc0) * diff_color;\n"
-				"	else\n"
+				"	if (parameters.z < 1.)\n"
 				"		ocol = diff_color;\n"
+				"	else if (parameters.z > 1.)\n"
+				"		ocol = texture(fs0, tc0).rrrr * diff_color;\n"
+				"	else\n"
+				"		ocol = sample_image(fs0, tc0, parameters2.x).bgra * diff_color;\n"
 				"}\n"
 			};
 
@@ -530,10 +581,6 @@ namespace vk
 			const u32 data_size = pitch * h;
 			const auto offset = upload_heap.alloc<512>(data_size);
 			const auto addr = upload_heap.map(offset, data_size);
-
-			const VkComponentMapping bgra = { VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_A };
-			const VkComponentMapping rrrr = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R };
-			const VkComponentMapping mapping = (font) ? rrrr : bgra;
 
 			const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
@@ -561,7 +608,7 @@ namespace vk
 			vkCmdCopyBufferToImage(cmd, upload_heap.heap->value, tex->value, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 			change_image_layout(cmd, tex.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, range);
 
-			auto view = std::make_unique<vk::image_view>(dev, tex.get(), mapping, range);
+			auto view = std::make_unique<vk::image_view>(dev, tex.get());
 
 			auto result = view.get();
 
@@ -664,12 +711,13 @@ namespace vk
 			dst[7] = m_color.a;
 			dst[8] = m_time;
 			dst[9] = m_pulse_glow? 1.f : 0.f;
-			dst[10] = m_skip_texture_read? 0.f : 1.f;
+			dst[10] = m_skip_texture_read? 0.f : (f32)m_texture_type;
 			dst[11] = m_clip_enabled ? 1.f : 0.f;
 			dst[12] = m_clip_region.x1;
 			dst[13] = m_clip_region.y1;
 			dst[14] = m_clip_region.x2;
 			dst[15] = m_clip_region.y2;
+			dst[16] = m_blur_strength;
 			m_ubo.unmap();
 		}
 
@@ -702,8 +750,10 @@ namespace vk
 				m_skip_texture_read = false;
 				m_color = command.config.color;
 				m_pulse_glow = command.config.pulse_glow;
+				m_blur_strength = f32(command.config.blur_strength) * 0.01f;
 				m_clip_enabled = command.config.clip_region;
 				m_clip_region = command.config.clip_rect;
+				m_texture_type = 1;
 
 				auto src = vk::null_image_view(cmd);
 				switch (command.config.texture_ref)
@@ -715,6 +765,7 @@ namespace vk
 					m_skip_texture_read = true;
 					break;
 				case rsx::overlays::image_resource_id::font_file:
+					m_texture_type = 2;
 					src = find_font(command.config.font_ref, cmd, upload_heap)->value;
 					break;
 				case rsx::overlays::image_resource_id::raw_image:

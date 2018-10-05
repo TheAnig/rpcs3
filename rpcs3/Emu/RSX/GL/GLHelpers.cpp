@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "GLHelpers.h"
 #include "Utilities/Log.h"
 
@@ -35,11 +35,15 @@ namespace gl
 		switch (type)
 		{
 		case GL_DEBUG_TYPE_ERROR:
+		{
 			LOG_ERROR(RSX, "%s", message);
 			return;
+		}
 		default:
+		{
 			LOG_WARNING(RSX, "%s", message);
 			return;
+		}
 		}
 	}
 #endif
@@ -304,6 +308,31 @@ namespace gl
 	size2i fbo::get_extents() const
 	{
 		return m_size;
+	}
+
+	bool fbo::matches(const std::array<GLuint, 4>& color_targets, GLuint depth_stencil_target) const
+	{
+		for (u32 index = 0; index < 4; ++index)
+		{
+			if (color[index].resource_id() != color_targets[index])
+			{
+				return false;
+			}
+		}
+
+		const auto depth_resource = depth.resource_id() | depth_stencil.resource_id();
+		return (depth_resource == depth_stencil_target);
+	}
+
+	bool fbo::references_any(const std::vector<GLuint>& resources) const
+	{
+		for (const auto &e : m_resource_bindings)
+		{
+			if (std::find(resources.begin(), resources.end(), e.second) != resources.end())
+				return true;
+		}
+
+		return false;
 	}
 
 	bool is_primitive_native(rsx::primitive_type in)

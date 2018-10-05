@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "GLGSRender.h"
 #include "../rsx_methods.h"
 #include "../Common/BufferUtils.h"
@@ -158,7 +158,7 @@ namespace
 
 		vertex_input_state operator()(const rsx::draw_inlined_array& command)
 		{
-			const u32 vertex_count = (u32)command.inline_vertex_array.size() * sizeof(u32) / m_vertex_layout.interleaved_blocks[0].attribute_stride;
+			const u32 vertex_count = (u32)(command.inline_vertex_array.size() * sizeof(u32)) / m_vertex_layout.interleaved_blocks[0].attribute_stride;
 
 			if (!gl::is_primitive_native(rsx::method_registers.current_draw_clause.primitive))
 			{
@@ -186,8 +186,11 @@ gl::vertex_upload_info GLGSRender::set_vertex_buffer()
 
 	m_vertex_layout = analyse_inputs_interleaved();
 
+	if (!m_vertex_layout.validate())
+		return {};
+
 	//Write index buffers and count verts
-	auto result = std::apply_visitor(draw_command_visitor(*m_index_ring_buffer, m_vertex_layout), get_draw_command(rsx::method_registers));
+	auto result = std::visit(draw_command_visitor(*m_index_ring_buffer, m_vertex_layout), get_draw_command(rsx::method_registers));
 
 	auto &vertex_count = result.allocated_vertex_count;
 	auto &vertex_base = result.vertex_data_base;
@@ -270,7 +273,3 @@ gl::vertex_upload_info GLGSRender::set_vertex_buffer()
 	m_vertex_upload_time += std::chrono::duration_cast<std::chrono::microseconds>(now - then).count();
 	return upload_info;
 }
-
-namespace
-{
-} // End anonymous namespace

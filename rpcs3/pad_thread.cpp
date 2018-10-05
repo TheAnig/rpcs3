@@ -1,13 +1,13 @@
 #include "pad_thread.h"
-#include "../ds4_pad_handler.h"
+#include "ds4_pad_handler.h"
 #ifdef _WIN32
-#include "../xinput_pad_handler.h"
-#include "../mm_joystick_handler.h"
+#include "xinput_pad_handler.h"
+#include "mm_joystick_handler.h"
 #elif HAVE_LIBEVDEV
-#include "../evdev_joystick_handler.h"
+#include "evdev_joystick_handler.h"
 #endif
-#include "../keyboard_pad_handler.h"
-#include "../Emu/Io/Null/NullPadHandler.h"
+#include "keyboard_pad_handler.h"
+#include "Emu/Io/Null/NullPadHandler.h"
 
 
 pad_thread::pad_thread(void *_curthread, void *_curwindow) : curthread(_curthread), curwindow(_curwindow)
@@ -60,12 +60,10 @@ void pad_thread::Init(const u32 max_connect)
 			case pad_handler::ds4:
 				cur_pad_handler = std::make_shared<ds4_pad_handler>();
 				break;
-#ifdef _MSC_VER
+#ifdef _WIN32
 			case pad_handler::xinput:
 				cur_pad_handler = std::make_shared<xinput_pad_handler>();
 				break;
-#endif
-#ifdef _WIN32
 			case pad_handler::mm:
 				cur_pad_handler = std::make_shared<mm_joystick_handler>();
 				break;

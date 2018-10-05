@@ -13,7 +13,7 @@
 
 
 
-logs::channel cellFs("cellFs");
+LOG_CHANNEL(cellFs);
 
 error_code cellFsGetPath(u32 fd, vm::ptr<char> out_path)
 {
@@ -891,7 +891,7 @@ struct fs_aio_thread : ppu_thread
 			}
 			else
 			{
-				std::lock_guard<std::mutex> lock(file->mp->mutex);
+				std::lock_guard lock(file->mp->mutex);
 
 				const auto old_pos = file->file.pos(); file->file.seek(aio->offset);
 

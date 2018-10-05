@@ -4,8 +4,8 @@
 #include <vector>
 #include <memory>
 #include "stdafx.h"
-#include "../../Utilities/Config.h"
-#include "../../Utilities/types.h"
+#include "Utilities/Config.h"
+#include "Utilities/types.h"
 #include "Emu/System.h"
 
 // TODO: HLE info (constants, structs, etc.) should not be available here
@@ -91,11 +91,14 @@ enum ButtonDataOffset
 	CELL_PAD_BTN_OFFSET_SENSOR_G       = 23,
 };
 
-static const u32 CELL_MAX_PADS = 127;
-static const u32 CELL_PAD_MAX_PORT_NUM = 7;
-static const u32 CELL_PAD_MAX_CODES = 64;
-static const u32 CELL_PAD_MAX_CAPABILITY_INFO = 32;
-static const u32 CELL_PAD_ACTUATOR_MAX = 2;
+enum
+{
+	CELL_PAD_ACTUATOR_MAX        = 2,
+	CELL_PAD_MAX_PORT_NUM        = 7,
+	CELL_PAD_MAX_CAPABILITY_INFO = 32,
+	CELL_PAD_MAX_CODES           = 64,
+	CELL_MAX_PADS                = 127,
+};
 
 struct Button
 {
@@ -410,8 +413,6 @@ protected:
 	// return is new x and y values in 0-255 range
 	std::tuple<u16, u16> NormalizeStickDeadzone(s32 inX, s32 inY, u32 deadzone);
 
-	// get clamped value between min and max
-	s32 Clamp(f32 input, s32 min, s32 max);
 	// get clamped value between 0 and 255
 	u16 Clamp0To255(f32 input);
 	// get clamped value between 0 and 1023

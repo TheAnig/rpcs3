@@ -2,14 +2,13 @@
 #include "stdafx.h"
 #include "stdafx_d3d12.h"
 
+#include <variant>
+
 #include "D3D12GSRender.h"
 #include "d3dx12.h"
 #include "../Common/BufferUtils.h"
 #include "D3D12Formats.h"
 #include "../rsx_methods.h"
-#include "restore_new.h"
-#include "Utilities/variant.hpp"
-#include "define_new_memleakdetect.h"
 
 namespace
 {
@@ -168,7 +167,7 @@ namespace
 			gsl::span<gsl::byte> mapped_buffer_span = {
 				(gsl::byte*)mapped_buffer, gsl::narrow_cast<int>(buffer_size)};
 			write_vertex_array_data_to_buffer(mapped_buffer_span, vertex_array.data, vertex_count,
-				vertex_array.type, vertex_array.attribute_size, vertex_array.stride, element_size);
+				vertex_array.type, vertex_array.attribute_size, vertex_array.stride, element_size, vertex_array.is_be);
 
 			m_buffer_data.unmap(CD3DX12_RANGE(heap_offset, heap_offset + buffer_size));
 
@@ -262,7 +261,7 @@ namespace
 		std::function<attribute_storage(rsx::rsx_state, std::vector<std::pair<u32, u32>>)>
 			get_vertex_buffers,
 		ID3D12Resource* m_vertex_buffer_data, d3d12_data_heap& m_buffer_data,
-		gsl::not_null<ID3D12GraphicsCommandList*> command_list)
+		ID3D12GraphicsCommandList* command_list)
 	{
 		command_list->ResourceBarrier(1,
 			&CD3DX12_RESOURCE_BARRIER::Transition(m_vertex_buffer_data,
@@ -274,7 +273,7 @@ namespace
 			vertex_count, command_list, m_vertex_buffer_data, m_buffer_data);
 		const auto& vertex_buffers = get_vertex_buffers(rsx::method_registers, vertex_ranges);
 
-		for (const auto& vbo : vertex_buffers) std::apply_visitor(visitor, vbo);
+		for (const auto& vbo : vertex_buffers) std::visit(visitor, vbo);
 
 		command_list->ResourceBarrier(1,
 			&CD3DX12_RESOURCE_BARRIER::Transition(m_vertex_buffer_data,
@@ -464,7 +463,7 @@ namespace
 std::tuple<bool, size_t, std::vector<D3D12_SHADER_RESOURCE_VIEW_DESC>>
 D3D12GSRender::upload_and_set_vertex_index_data(ID3D12GraphicsCommandList* command_list)
 {
-	return std::apply_visitor(
+	return std::visit(
 		draw_command_visitor(command_list, m_buffer_data, m_vertex_buffer_data.Get(),
 			[this](
 				const auto& state, const auto& list) { return get_vertex_buffers(state, list, 0); }),

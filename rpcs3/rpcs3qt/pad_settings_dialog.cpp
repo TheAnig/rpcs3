@@ -16,8 +16,6 @@
 #include "ds4_pad_handler.h"
 #ifdef _WIN32
 #include "xinput_pad_handler.h"
-#endif
-#ifdef _MSC_VER
 #include "mm_joystick_handler.h"
 #endif
 #ifdef HAVE_LIBEVDEV
@@ -184,6 +182,11 @@ pad_settings_dialog::pad_settings_dialog(QWidget *parent)
 	m_tabs->widget(0)->layout()->setSizeConstraint(QLayout::SetFixedSize);
 
 	layout()->setSizeConstraint(QLayout::SetFixedSize);
+
+	show();
+
+	RepaintPreviewLabel(ui->preview_stick_left, ui->slider_stick_left->value(), ui->slider_stick_left->size().width(), 0, 0);
+	RepaintPreviewLabel(ui->preview_stick_right, ui->slider_stick_right->value(), ui->slider_stick_right->size().width(), 0, 0);
 }
 
 pad_settings_dialog::~pad_settings_dialog()
@@ -237,6 +240,7 @@ void pad_settings_dialog::InitButtons()
 	m_padButtons->addButton(ui->b_reset, button_ids::id_reset_parameters);
 	m_padButtons->addButton(ui->b_blacklist, button_ids::id_blacklist);
 	m_padButtons->addButton(ui->b_refresh, button_ids::id_refresh);
+	m_padButtons->addButton(ui->b_addProfile, button_ids::id_add_profile);
 	m_padButtons->addButton(ui->b_ok, button_ids::id_ok);
 	m_padButtons->addButton(ui->b_cancel, button_ids::id_cancel);
 
@@ -452,6 +456,7 @@ void pad_settings_dialog::ReactivateButtons()
 	if (m_padButtons->button(m_button_id))
 	{
 		m_padButtons->button(m_button_id)->setPalette(m_palette);
+		m_padButtons->button(m_button_id)->releaseMouse();
 	}
 
 	m_button_id = button_ids::id_pad_begin;
@@ -462,6 +467,12 @@ void pad_settings_dialog::ReactivateButtons()
 	{
 		but->setFocusPolicy(Qt::StrongFocus);
 	}
+
+	m_tabs->setFocusPolicy(Qt::TabFocus);
+
+	ui->chooseProfile->setFocusPolicy(Qt::WheelFocus);
+	ui->chooseHandler->setFocusPolicy(Qt::WheelFocus);
+	ui->chooseDevice->setFocusPolicy(Qt::WheelFocus);
 }
 
 void pad_settings_dialog::RepaintPreviewLabel(QLabel* l, int dz, int w, int x, int y)
@@ -518,7 +529,7 @@ void pad_settings_dialog::keyPressEvent(QKeyEvent *keyEvent)
 	ReactivateButtons();
 }
 
-void pad_settings_dialog::mousePressEvent(QMouseEvent* event)
+void pad_settings_dialog::mouseReleaseEvent(QMouseEvent* event)
 {
 	if (m_handler->m_type != pad_handler::keyboard)
 	{
@@ -543,12 +554,66 @@ void pad_settings_dialog::mousePressEvent(QMouseEvent* event)
 	ReactivateButtons();
 }
 
+void pad_settings_dialog::mouseMoveEvent(QMouseEvent* event)
+{
+	if (m_handler->m_type != pad_handler::keyboard)
+	{
+		return;
+	}
+
+	if (m_button_id == button_ids::id_pad_begin)
+	{
+		return;
+	}
+
+	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
+	{
+		LOG_NOTICE(HLE, "Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+	}
+	else
+	{
+		QPoint mouse_pos = QCursor::pos();
+		int delta_x = mouse_pos.x() - m_last_pos.x();
+		int delta_y = mouse_pos.y() - m_last_pos.y();
+
+		u32 key = 0;
+
+		if (delta_x > 100)
+		{
+			key = mouse::move_right;
+		}
+		else if (delta_x < -100)
+		{
+			key = mouse::move_left;
+		}
+		else if (delta_y > 100)
+		{
+			key = mouse::move_down;
+		}
+		else if (delta_y < -100)
+		{
+			key = mouse::move_up;
+		}
+
+		if (key != 0)
+		{
+			m_cfg_entries[m_button_id].key = ((keyboard_pad_handler*)m_handler.get())->GetMouseName(key);
+			m_cfg_entries[m_button_id].text = qstr(m_cfg_entries[m_button_id].key);
+			ReactivateButtons();
+		}
+	}
+}
+
 bool pad_settings_dialog::eventFilter(QObject* object, QEvent* event)
 {
 	// Disabled buttons should not absorb mouseclicks
-	if (event->type() == QEvent::MouseButtonPress)
+	if (event->type() == QEvent::MouseButtonRelease)
 	{
 		event->ignore();
+	}
+	if (event->type() == QEvent::MouseMove)
+	{
+		mouseMoveEvent((QMouseEvent*)event);
 	}
 	return QDialog::eventFilter(object, event);
 }
@@ -599,6 +664,7 @@ void pad_settings_dialog::OnPadButtonClicked(int id)
 	{
 	case button_ids::id_pad_begin:
 	case button_ids::id_pad_end:
+	case button_ids::id_add_profile:
 	case button_ids::id_refresh:
 	case button_ids::id_ok:
 	case button_ids::id_cancel:
@@ -620,9 +686,18 @@ void pad_settings_dialog::OnPadButtonClicked(int id)
 		but->setFocusPolicy(Qt::ClickFocus);
 	}
 
+	m_tabs->setFocusPolicy(Qt::ClickFocus);
+
+	ui->chooseProfile->setFocusPolicy(Qt::ClickFocus);
+	ui->chooseHandler->setFocusPolicy(Qt::ClickFocus);
+	ui->chooseDevice->setFocusPolicy(Qt::ClickFocus);
+
+	m_last_pos = QCursor::pos();
+
 	m_button_id = id;
 	m_padButtons->button(m_button_id)->setText(tr("[ Waiting %1 ]").arg(MAX_SECONDS));
 	m_padButtons->button(m_button_id)->setPalette(QPalette(Qt::blue));
+	m_padButtons->button(m_button_id)->grabMouse();
 	SwitchButtons(false); // disable all buttons, needed for using Space, Enter and other specific buttons
 	m_timer.start(1000);
 }
@@ -654,12 +729,10 @@ std::shared_ptr<PadHandlerBase> pad_settings_dialog::GetHandler(pad_handler type
 	case pad_handler::ds4:
 		ret_handler = std::make_unique<ds4_pad_handler>();
 		break;
-#ifdef _MSC_VER
+#ifdef _WIN32
 	case pad_handler::xinput:
 		ret_handler = std::make_unique<xinput_pad_handler>();
 		break;
-#endif
-#ifdef _WIN32
 	case pad_handler::mm:
 		ret_handler = std::make_unique<mm_joystick_handler>();
 		break;
@@ -701,7 +774,7 @@ void pad_settings_dialog::ChangeInputType()
 	// Refill the device combobox with currently available devices
 	switch (m_handler->m_type)
 	{
-#ifdef _MSC_VER
+#ifdef _WIN32
 	case pad_handler::xinput:
 	{
 		const QString name_string = qstr(m_handler->name_string());
@@ -800,12 +873,10 @@ void pad_settings_dialog::ChangeProfile()
 	case pad_handler::ds4:
 		((ds4_pad_handler*)m_handler.get())->init_config(&m_handler_cfg, cfg_name);
 		break;
-#ifdef _MSC_VER
+#ifdef _WIN32
 	case pad_handler::xinput:
 		((xinput_pad_handler*)m_handler.get())->init_config(&m_handler_cfg, cfg_name);
 		break;
-#endif
-#ifdef _WIN32
 	case pad_handler::mm:
 		((mm_joystick_handler*)m_handler.get())->init_config(&m_handler_cfg, cfg_name);
 		break;

@@ -2,6 +2,7 @@
 
 #include "types.h"
 #include "Atomic.h"
+#include <shared_mutex>
 
 // Lightweight condition variable
 class cond_variable
@@ -23,13 +24,22 @@ public:
 
 	// Intrusive wait algorithm for lockable objects
 	template <typename T>
-	explicit_bool_t wait(T& object, u64 usec_timeout = -1)
+	bool wait(T& object, u64 usec_timeout = -1)
 	{
 		const u32 _old = m_value.fetch_add(1); // Increment waiter counter
 		object.unlock();
 		const bool res = imp_wait(_old, usec_timeout);
 		object.lock();
 		return res;
+	}
+
+	// Unlock all specified objects but don't lock them again
+	template <typename... Locks>
+	bool wait_unlock(u64 usec_timeout, Locks&&... locks)
+	{
+		const u32 _old = m_value.fetch_add(1); // Increment waiter counter
+		(..., std::forward<Locks>(locks).unlock());
+		return imp_wait(_old, usec_timeout);
 	}
 
 	// Wake one thread
@@ -88,7 +98,7 @@ public:
 		imp_unlock(1);
 	}
 
-	explicit_bool_t wait(u64 usec_timeout = -1);
+	bool wait(u64 usec_timeout = -1);
 
 	void notify_all()
 	{
